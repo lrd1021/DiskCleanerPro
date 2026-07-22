@@ -1,0 +1,408 @@
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace DiskCleaner.Elevated
+{
+    /// <summary>
+    /// 独立 Elevated Helper：以管理员身份执行少量高权限操作。
+    /// 主程序默认以 asInvoker 运行，仅在需要时通过 UAC 拉起本 helper。
+    /// </summary>
+    class Program
+    {
+        static int Main(string[] args)
+        {
+            // 自检：必须以管理员运行
+            if (!IsElevated())
+            {
+                Console.Error.WriteLine("Elevated helper 必须以管理员权限运行");
+                return 0x4C7; // ERROR_CANCELLED
+            }
+
+            if (args.Length < 1)
+            {
+                Console.Error.WriteLine("用法: DiskCleaner.Elevated <symlink|delete|uninstall> ...");
+                return 1;
+            }
+
+            try
+            {
+                return args[0].ToLowerInvariant() switch
+                {
+                    "symlink" => Symlink(args),
+                    "delete" => Delete(args),
+                    "uninstall" => Uninstall(args),
+                    _ => UnknownCommand()
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"操作失败: {ex.Message}");
+                return 1;
+            }
+        }
+
+        private static int UnknownCommand()
+        {
+            Console.Error.WriteLine("未知命令");
+            return 1;
+        }
+
+        // ── symlink <linkPath> <targetPath> ──
+        private static int Symlink(string[] args)
+        {
+            if (args.Length != 3)
+            {
+                Console.Error.WriteLine("用法: symlink <linkPath> <targetPath>");
+                return 1;
+            }
+
+            var linkPath = args[1];
+            var targetPath = args[2];
+
+            if (File.Exists(linkPath) || Directory.Exists(linkPath))
+            {
+                Console.Error.WriteLine("链接路径已存在");
+                return 1;
+            }
+
+            if (!CreateSymbolicLink(linkPath, targetPath, SYMLINK_FLAG_FILE))
+            {
+                var err = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine($"CreateSymbolicLink 失败: {err}");
+                return 1;
+            }
+
+            return 0;
+        }
+
+        // ── delete <path> ──
+        private static int Delete(string[] args)
+        {
+            if (args.Length != 2)
+            {
+                Console.Error.WriteLine("用法: delete <path>");
+                return 1;
+            }
+
+            var path = args[1];
+            if (!IsLocalPath(path))
+            {
+                Console.Error.WriteLine("拒绝删除远程/URL 路径");
+                return 1;
+            }
+
+            if (IsProtectedRoot(path))
+            {
+                Console.Error.WriteLine("拒绝删除受保护根目录");
+                return 1;
+            }
+
+            DeleteRecursive(path);
+            return 0;
+        }
+
+        private static void DeleteRecursive(string path)
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                return;
+            }
+
+            if (!Directory.Exists(path)) return;
+
+            // 不跟随交接点/符号链接
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                return;
+
+            foreach (var file in Directory.GetFiles(path))
+            {
+                try { File.Delete(file); }
+                catch { /* 继续删除其余 */ }
+            }
+
+            foreach (var dir in Directory.GetDirectories(path))
+            {
+                try { DeleteRecursive(dir); }
+                catch { /* 继续 */ }
+            }
+
+            try { Directory.Delete(path, false); }
+            catch { /* 可能目录非空 */ }
+        }
+
+        // ── uninstall "<full uninstall command line>" ──
+        private static int Uninstall(string[] args)
+        {
+            if (args.Length != 2)
+            {
+                Console.Error.WriteLine("用法: uninstall \"<full command line>\"");
+                return 1;
+            }
+
+            var commandLine = args[1];
+            if (!TryParseCommandLine(commandLine, out var fileName, out var arguments))
+            {
+                Console.Error.WriteLine("无法解析卸载命令");
+                return 1;
+            }
+
+            string resolvedFile;
+            bool isMsi = Path.GetFileName(fileName).Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase);
+            if (isMsi)
+            {
+                resolvedFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe");
+                if (!IsSafeMsiUninstall(arguments))
+                {
+                    Console.Error.WriteLine("MsiExec 参数未通过安全校验");
+                    return 1;
+                }
+            }
+            else
+            {
+                try { resolvedFile = Path.GetFullPath(fileName); }
+                catch { resolvedFile = fileName; }
+
+                if (!IsTrustworthyUninstaller(resolvedFile))
+                {
+                    Console.Error.WriteLine("卸载程序未通过受信任目录/签名校验");
+                    return 1;
+                }
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = resolvedFile,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = false
+            };
+
+            Process.Start(psi);
+            return 0;
+        }
+
+        // ── 工具方法 ──
+
+        private static bool IsElevated()
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+
+        private static bool IsLocalPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            if (path.StartsWith("\\\\")) return false;
+            if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return true;
+        }
+
+        private static bool IsProtectedRoot(string path)
+        {
+            try
+            {
+                var full = Path.GetFullPath(path).TrimEnd('\\');
+                var root = Path.GetPathRoot(full)?.TrimEnd('\\');
+                if (full.Equals(root, StringComparison.OrdinalIgnoreCase)) return true;
+
+                var dir = Path.GetDirectoryName(full) ?? "";
+                if (dir.Equals(root, StringComparison.OrdinalIgnoreCase))
+                {
+                    var name = Path.GetFileName(full);
+                    var protectedNames = new[] { "Windows", "Program Files", "Program Files (x86)", "System Volume Information", "$Recycle.Bin" };
+                    if (protectedNames.Any(p => name.Equals(p, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool TryParseCommandLine(string commandLine, out string fileName, out string arguments)
+        {
+            fileName = null;
+            arguments = null;
+            if (string.IsNullOrWhiteSpace(commandLine)) return false;
+
+            var ptr = CommandLineToArgvW(commandLine, out int argc);
+            if (ptr != IntPtr.Zero && argc > 0)
+            {
+                try
+                {
+                    var argv = new IntPtr[argc];
+                    Marshal.Copy(ptr, argv, 0, argc);
+                    fileName = Marshal.PtrToStringUni(argv[0]);
+                    var sb = new StringBuilder();
+                    for (int i = 1; i < argc; i++)
+                        sb.Append(Marshal.PtrToStringUni(argv[i])).Append(' ');
+                    arguments = sb.ToString().Trim();
+                    return !string.IsNullOrEmpty(fileName);
+                }
+                finally
+                {
+                    LocalFree(ptr);
+                }
+            }
+
+            var trimmed = commandLine.Trim();
+            if (trimmed.StartsWith("\""))
+            {
+                int q = trimmed.IndexOf('"', 1);
+                if (q > 0)
+                {
+                    fileName = trimmed.Substring(1, q - 1);
+                    arguments = trimmed.Substring(q + 1).Trim();
+                    return true;
+                }
+            }
+            var parts = trimmed.Split(new[] { ' ' }, 2);
+            fileName = parts[0];
+            arguments = parts.Length > 1 ? parts[1] : "";
+            return true;
+        }
+
+        private static bool IsTrustworthyUninstaller(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
+            string fullPath;
+            try { fullPath = Path.GetFullPath(path); }
+            catch { return false; }
+
+            var dir = Path.GetDirectoryName(fullPath) ?? "";
+            var trustedRoots = new[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows)
+            };
+            bool inTrusted = trustedRoots.Any(r =>
+                !string.IsNullOrEmpty(r) &&
+                (dir.StartsWith(r, StringComparison.OrdinalIgnoreCase) ||
+                 fullPath.StartsWith(r, StringComparison.OrdinalIgnoreCase)));
+            if (!inTrusted) return false;
+
+            return IsAuthenticodeSigned(fullPath);
+        }
+
+        private static bool IsSafeMsiUninstall(string msiArgs)
+        {
+            if (string.IsNullOrWhiteSpace(msiArgs)) return false;
+            var ptr = CommandLineToArgvW(msiArgs.Trim(), out int argc);
+            if (ptr == IntPtr.Zero || argc == 0) return false;
+            try
+            {
+                var argv = new IntPtr[argc];
+                Marshal.Copy(ptr, argv, 0, argc);
+                var tokens = new string[argc];
+                for (int i = 0; i < argc; i++) tokens[i] = Marshal.PtrToStringUni(argv[i]);
+                if (tokens.Length != 2) return false;
+
+                var action = tokens[0].ToLowerInvariant();
+                var target = tokens[1].Trim('"', '\'');
+
+                if (action == "/x" || action == "-x")
+                    return Regex.IsMatch(target, @"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
+
+                if (action == "/uninstall" || action == "-uninstall")
+                {
+                    if (target.StartsWith("\\\\")) return false;
+                    if (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                        target.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                        target.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    return target.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) &&
+                           Regex.IsMatch(target, @"^[A-Za-z]:\\");
+                }
+                return false;
+            }
+            finally { LocalFree(ptr); }
+        }
+
+        // ── P/Invoke ──
+
+        private const int SYMLINK_FLAG_FILE = 0x0;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateSymbolicLink(string lpSymlinkFileName, string lpTargetFileName, int dwFlags);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CommandLineToArgvW([MarshalAs(UnmanagedType.LPWStr)] string lpCmdLine, out int pNumArgs);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr hMem);
+
+        private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 =
+            new Guid("{00AAC56B-CD44-11d3-8A2E-0090278082FC}");
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WINTRUST_FILE_INFO
+        {
+            public int cbStruct;
+            [MarshalAs(UnmanagedType.LPWStr)] public string pcwszFilePath;
+            public IntPtr hFile;
+            public IntPtr pgKnownSubject;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WINTRUST_DATA
+        {
+            public int cbStruct;
+            public IntPtr pPolicyCallbackData;
+            public IntPtr pSIPClientData;
+            public int dwUIChoice;
+            public int fdwRevocationChecks;
+            public int dwUnionChoice;
+            public IntPtr pFile;
+            public int dwStateAction;
+            public IntPtr hWVTStateData;
+            public IntPtr pwszURLReference;
+            public int dwProvFlags;
+            public int dwUIContext;
+        }
+
+        [DllImport("wintrust.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid pgActionID, ref WINTRUST_DATA pWVTData);
+
+        private static bool IsAuthenticodeSigned(string filePath)
+        {
+            if (!File.Exists(filePath)) return false;
+            var fileInfo = new WINTRUST_FILE_INFO
+            {
+                cbStruct = Marshal.SizeOf<WINTRUST_FILE_INFO>(),
+                pcwszFilePath = filePath,
+                hFile = IntPtr.Zero,
+                pgKnownSubject = IntPtr.Zero
+            };
+            var trustData = new WINTRUST_DATA
+            {
+                cbStruct = Marshal.SizeOf<WINTRUST_DATA>(),
+                dwUIChoice = 2,
+                fdwRevocationChecks = 0,
+                dwUnionChoice = 1,
+                pFile = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>()),
+                dwStateAction = 0,
+                dwProvFlags = 0,
+                dwUIContext = 0
+            };
+            try
+            {
+                Marshal.StructureToPtr(fileInfo, trustData.pFile, false);
+                return WinVerifyTrust(IntPtr.Zero, WINTRUST_ACTION_GENERIC_VERIFY_V2, ref trustData) == 0;
+            }
+            catch { return false; }
+            finally { if (trustData.pFile != IntPtr.Zero) Marshal.FreeHGlobal(trustData.pFile); }
+        }
+    }
+}

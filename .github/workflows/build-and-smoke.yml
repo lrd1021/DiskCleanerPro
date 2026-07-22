@@ -1,0 +1,32 @@
+name: Build and Smoke Test
+
+# R15: 将冒烟工程接入 CI。每次推送到主分支或开 PR 时：
+#   1) 还原并构建整个 solution（含 DiskCleaner + DiskCleaner.Elevated + DiskCleaner.SmokeTest）
+#   2) 运行无头冒烟测试（DiskCleaner.SmokeTest，exit code 0 = 全通过）
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore DiskCleanerPro.sln
+
+      - name: Build (Release)
+        run: dotnet build DiskCleanerPro.sln -c Release --no-restore
+
+      - name: Smoke test (headless)
+        # 冒烟测试是控制台程序，Environment.Exit(0/1) 直接决定 CI 成败
+        run: dotnet run --project src/DiskCleaner.SmokeTest --configuration Release

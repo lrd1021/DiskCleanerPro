@@ -1,0 +1,268 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+
+namespace DiskCleaner.Helpers
+{
+    /// <summary>
+    /// 统一的 Windows API P/Invoke 声明
+    /// </summary>
+    public static class NativeMethods
+    {
+        // 系统保护目录 — 多模块共享
+        public static readonly HashSet<string> ProtectedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "System Volume Information", "$Recycle.Bin", "$WinREAgent", "$SysReset",
+            "Windows", "Program Files", "Program Files (x86)"
+        };
+
+        // ── 回收站操作 ──
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+        public struct SHQUERYRBINFO
+        {
+            public int cbSize;
+            public long i64Size;
+            public long i64NumItems;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+        public static extern int SHQueryRecycleBin([MarshalAs(UnmanagedType.LPWStr)] string pszRootPath,
+            ref SHQUERYRBINFO pSHQueryRBInfo);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+        public static extern int SHEmptyRecycleBin(IntPtr hwnd, [MarshalAs(UnmanagedType.LPWStr)] string pszRootPath,
+            uint dwFlags);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+        public struct SHFILEOPSTRUCT
+        {
+            public IntPtr hwnd;
+            public uint wFunc;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string pFrom;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string pTo;
+            public ushort fFlags;
+            public bool fAnyOperationsAborted;
+            public IntPtr hNameMappings;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string lpszProgressTitle;
+        }
+
+        public const uint FO_DELETE = 0x0003;
+        public const ushort FOF_ALLOWUNDO = 0x0040;
+        public const ushort FOF_NOCONFIRMATION = 0x0010;
+        public const ushort FOF_SILENT = 0x0004;
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
+
+        public const uint SHERB_NOCONFIRMATION = 0x00000001;
+        public const uint SHERB_NOPROGRESSUI = 0x00000002;
+        public const uint SHERB_NOSOUND = 0x00000004;
+
+        // ── 文件/目录操作 ──
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CreateSymbolicLink(string lpSymlinkFileName, string lpTargetFileName, int dwFlags);
+
+        public const int SYMLINK_FLAG_FILE = 0x0;
+        public const int SYMLINK_FLAG_DIRECTORY = 0x1;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SetDllDirectory(string lpPathName);
+
+        // ── 命令行解析（正确处理引号，防止按空格切分误执行）──
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr CommandLineToArgvW(
+            [MarshalAs(UnmanagedType.LPWStr)] string lpCmdLine, out int pNumArgs);
+
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr LocalFree(IntPtr hMem);
+
+        // ── Authenticode 数字签名校验 ──
+
+        private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 =
+            new Guid("{00AAC56B-CD44-11d3-8A2E-0090278082FC}");
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct WINTRUST_FILE_INFO
+        {
+            public int cbStruct;
+            [MarshalAs(UnmanagedType.LPWStr)] public string pcwszFilePath;
+            public IntPtr hFile;
+            public IntPtr pgKnownSubject;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WINTRUST_DATA
+        {
+            public int cbStruct;
+            public IntPtr pPolicyCallbackData;
+            public IntPtr pSIPClientData;
+            public int dwUIChoice;          // 2 = WTD_UI_NONE
+            public int fdwRevocationChecks; // 0 = WTD_REVOKE_NONE
+            public int dwUnionChoice;       // 1 = WTD_CHOICE_FILE
+            public IntPtr pFile;
+            public int dwStateAction;
+            public IntPtr hWVTStateData;
+            public IntPtr pwszURLReference;
+            public int dwProvFlags;
+            public int dwUIContext;
+        }
+
+        [DllImport("wintrust.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern int WinVerifyTrust(
+            IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid pgActionID, ref WINTRUST_DATA pWVTData);
+
+        /// <summary>校验 PE 文件是否含有受信任的有效 Authenticode 数字签名（result == 0 表示通过）</summary>
+        public static bool IsAuthenticodeSigned(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return false;
+
+            var fileInfo = new WINTRUST_FILE_INFO
+            {
+                cbStruct = Marshal.SizeOf<WINTRUST_FILE_INFO>(),
+                pcwszFilePath = filePath,
+                hFile = IntPtr.Zero,
+                pgKnownSubject = IntPtr.Zero
+            };
+
+            var trustData = new WINTRUST_DATA
+            {
+                cbStruct = Marshal.SizeOf<WINTRUST_DATA>(),
+                dwUIChoice = 2,
+                fdwRevocationChecks = 0,
+                dwUnionChoice = 1,
+                pFile = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>()),
+                dwStateAction = 0,
+                dwProvFlags = 0,
+                dwUIContext = 0
+            };
+
+            try
+            {
+                Marshal.StructureToPtr(fileInfo, trustData.pFile, false);
+                int result = WinVerifyTrust(IntPtr.Zero, WINTRUST_ACTION_GENERIC_VERIFY_V2, ref trustData);
+                return result == 0;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (trustData.pFile != IntPtr.Zero)
+                    Marshal.FreeHGlobal(trustData.pFile);
+            }
+        }
+
+        // ── 回收站辅助方法 ──
+
+        /// <summary>将文件移入回收站（失败时返回 false，不永久删除）</summary>
+        public static bool SendToRecycleBin(string filePath) => SendToRecycleBin(filePath, out _);
+
+        /// <summary>
+        /// 将文件移入回收站。out 参数返回 Win32 错误码（0 表示成功；
+        /// 用户取消时返回 0x4C7；异常时返回 HResult）。
+        /// </summary>
+        public static bool SendToRecycleBin(string filePath, out int errorCode)
+        {
+            errorCode = 0;
+            if (string.IsNullOrEmpty(filePath)) return false;
+            try
+            {
+                var shf = new SHFILEOPSTRUCT
+                {
+                    wFunc = FO_DELETE,
+                    pFrom = filePath + '\0' + '\0',
+                    fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT)
+                };
+                int result = SHFileOperation(ref shf);
+                if (result != 0)
+                    errorCode = result;
+                else if (shf.fAnyOperationsAborted)
+                    errorCode = 0x4C7; // ERROR_CANCELLED
+
+                bool ok = result == 0 && !shf.fAnyOperationsAborted;
+                if (!ok)
+                    Logger.Warning($"SendToRecycleBin 失败: {filePath}, errorCode=0x{errorCode:X}");
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                errorCode = ex.HResult;
+                Logger.Error($"SendToRecycleBin 异常: {filePath}", ex);
+                return false;
+            }
+        }
+
+        // ── 文件元数据（值类型，替代 per-file FileInfo，R12）──
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FILETIME
+        {
+            public uint dwLowDateTime;
+            public uint dwHighDateTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        internal struct WIN32_FILE_ATTRIBUTE_DATA
+        {
+            public uint dwFileAttributes;
+            public FILETIME ftCreationTime;
+            public FILETIME ftLastAccessTime;
+            public FILETIME ftLastWriteTime;
+            public uint nFileSizeHigh;
+            public uint nFileSizeLow;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetFileAttributesEx(string lpFileName, int fInfoLevelId, out WIN32_FILE_ATTRIBUTE_DATA lpFileInformation);
+
+        /// <summary>
+        /// 只读文件元数据（值类型 struct，替代 DiskAnalyzer 热循环中的 per-file FileInfo 分配，降低 GC 压力，R12）。
+        /// </summary>
+        public readonly struct FileMeta
+        {
+            public readonly string Name;
+            public readonly string FullName;
+            public readonly long Length;
+            public readonly string Extension;
+            public readonly string LastModified;
+            public FileMeta(string name, string fullName, long length, string ext, string lastModified)
+            {
+                Name = name; FullName = fullName; Length = length; Extension = ext; LastModified = lastModified;
+            }
+        }
+
+        /// <summary>
+        /// 通过 GetFileAttributesEx 一次性读取文件大小与最后修改时间（无需 new FileInfo 分配，R12）。
+        /// 支持 \\?\ 长路径前缀。失败时返回 false（调用方应跳过该文件）。
+        /// </summary>
+        public static bool TryGetFileMeta(string path, out FileMeta meta)
+        {
+            meta = default;
+            if (string.IsNullOrEmpty(path)) return false;
+            if (!GetFileAttributesEx(path, 0, out var data)) return false;
+
+            long size = ((long)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+            long raw = ((long)data.ftLastWriteTime.dwHighDateTime << 32) | (uint)data.ftLastWriteTime.dwLowDateTime;
+            DateTime lwt;
+            try { lwt = DateTime.FromFileTimeUtc(raw).ToLocalTime(); }
+            catch { lwt = DateTime.MinValue; }
+
+            meta = new FileMeta(
+                Path.GetFileName(path),
+                path,
+                size,
+                Path.GetExtension(path),
+                lwt == DateTime.MinValue ? "" : lwt.ToString("yyyy-MM-dd HH:mm"));
+            return true;
+        }
+    }
+}

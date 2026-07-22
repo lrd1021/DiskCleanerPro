@@ -1,0 +1,26 @@
+# === .NET build outputs ===
+[Bb]in/
+[Oo]bj/
+
+# === 自包含发布产物（可通过 dotnet publish 重新生成，约 160MB，不入库）===
+publish/
+
+# === 工具/评审缓存 ===
+.gstack/
+
+# === IDE / 编辑器 ===
+*.user
+*.suo
+*.userprefs
+.vs/
+.idea/
+*.swp
+
+# === 日志 ===
+*.log
+logs/
+
+# === OS 杂项 ===
+Thumbs.db
+Desktop.ini
+ehthumbs.db
