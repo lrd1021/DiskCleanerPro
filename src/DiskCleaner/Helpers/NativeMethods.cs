@@ -6,6 +6,22 @@ using System.Runtime.InteropServices;
 namespace DiskCleaner.Helpers
 {
     /// <summary>
+    /// 只读文件元数据（值类型 struct，替代 DiskAnalyzer 热循环中的 per-file FileInfo 分配，降低 GC 压力，R12）。
+    /// </summary>
+    public readonly struct FileMeta
+    {
+        public readonly string Name;
+        public readonly string FullName;
+        public readonly long Length;
+        public readonly string Extension;
+        public readonly string LastModified;
+        public FileMeta(string name, string fullName, long length, string ext, string lastModified)
+        {
+            Name = name; FullName = fullName; Length = length; Extension = ext; LastModified = lastModified;
+        }
+    }
+
+    /// <summary>
     /// 统一的 Windows API P/Invoke 声明
     /// </summary>
     public static class NativeMethods
@@ -223,22 +239,6 @@ namespace DiskCleaner.Helpers
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool GetFileAttributesEx(string lpFileName, int fInfoLevelId, out WIN32_FILE_ATTRIBUTE_DATA lpFileInformation);
-
-        /// <summary>
-        /// 只读文件元数据（值类型 struct，替代 DiskAnalyzer 热循环中的 per-file FileInfo 分配，降低 GC 压力，R12）。
-        /// </summary>
-        public readonly struct FileMeta
-        {
-            public readonly string Name;
-            public readonly string FullName;
-            public readonly long Length;
-            public readonly string Extension;
-            public readonly string LastModified;
-            public FileMeta(string name, string fullName, long length, string ext, string lastModified)
-            {
-                Name = name; FullName = fullName; Length = length; Extension = ext; LastModified = lastModified;
-            }
-        }
 
         /// <summary>
         /// 通过 GetFileAttributesEx 一次性读取文件大小与最后修改时间（无需 new FileInfo 分配，R12）。

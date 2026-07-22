@@ -34,6 +34,7 @@ namespace DiskCleaner.SmokeTest
                 Run("SoftwareManager_MsiExec白名单(反射)", SoftwareManager_MsiGuard);
                 Run("SoftwareManager_可信卸载程序(反射)", SoftwareManager_TrustGuard);
                 Run("SoftwareManager_拒绝危险MsiExec(行为)", SoftwareManager_RejectUnsafeMsi);
+                Run("ElevatedHelper_守卫(反射, R16)", ElevatedHelper_Guards);
             }
             catch (Exception ex)
             {
@@ -227,6 +228,43 @@ namespace DiskCleaner.SmokeTest
             bool result = mgr.Uninstall(info);
             Assert(result == false, "危险 MsiExec 应被拒绝(返回 false)，却返回了 true");
             Console.WriteLine("        (Uninstall 在提权前拒绝危险 MsiExec，未启动任何进程)");
+        }
+
+        static void ElevatedHelper_Guards()
+        {
+            // R16 无头覆盖：Elevated helper 以管理员身份运行，其守卫逻辑直接决定
+            // “能否删除/卸载”，必须在进真机前用反射验证。
+            var t = typeof(DiskCleaner.Elevated.Program);
+            var local = t.GetMethod("IsLocalPath", BindingFlags.NonPublic | BindingFlags.Static);
+            var prot = t.GetMethod("IsProtectedRoot", BindingFlags.NonPublic | BindingFlags.Static);
+            var msi = t.GetMethod("IsSafeMsiUninstall", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert(local != null && prot != null && msi != null, "找不到 Elevated 守卫方法");
+
+            bool L(string p) => (bool)local.Invoke(null, new object[] { p });
+            bool P(string p) => (bool)prot.Invoke(null, new object[] { p });
+            bool M(string a) => (bool)msi.Invoke(null, new object[] { a });
+
+            // IsLocalPath：拒绝 UNC / URL（防止远程路径删除/执行）
+            Assert(L(@"C:\Windows\Temp\junk.txt"), "本地路径应被接受");
+            Assert(!L(@"\\server\share\x.txt"), "UNC 应被拒");
+            Assert(!L("http://evil/x.txt"), "http URL 应被拒");
+            Assert(!L("https://evil/x.txt"), "https URL 应被拒");
+
+            // IsProtectedRoot：识别系统根，但不误伤用户/普通目录
+            Assert(P(@"C:\Windows"), "C:\\Windows 应被识别为受保护根");
+            Assert(P(@"C:\Program Files"), "Program Files 应被识别为受保护根");
+            Assert(P(@"C:\Program Files (x86)"), "Program Files (x86) 应被识别");
+            Assert(!P(@"C:\Users\me\junk"), "用户目录不应被误判为受保护根");
+            Assert(!P(@"C:\Temp\junk"), "普通 C:\\Temp 不应被误判为受保护根");
+
+            // IsSafeMsiUninstall（提权卸载路径）：与 SoftwareManager 同源逻辑
+            Assert(M("/X{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"), "应放行 /X{GUID}（单 token）");
+            Assert(M("/x{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"), "应放行小写 /x{GUID}");
+            Assert(!M("/i evil.msi"), "应拒绝 /i 安装");
+            Assert(!M("/package http://x/y.msi"), "应拒绝远程 /package");
+            Assert(!M("/X not-a-guid"), "应拒绝非法 GUID");
+
+            Console.WriteLine("        (Elevated helper 守卫 12 项断言全部通过)");
         }
 
         // ---------- 工具 ----------

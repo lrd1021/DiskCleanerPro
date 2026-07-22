@@ -214,15 +214,27 @@ namespace DiskCleaner.Elevated
             try
             {
                 var full = Path.GetFullPath(path).TrimEnd('\\');
-                var root = Path.GetPathRoot(full)?.TrimEnd('\\');
+                var root = (Path.GetPathRoot(full) ?? "").TrimEnd('\\');
                 if (full.Equals(root, StringComparison.OrdinalIgnoreCase)) return true;
 
-                var dir = Path.GetDirectoryName(full) ?? "";
+                var protectedNames = new[] { "Windows", "Program Files", "Program Files (x86)", "System Volume Information", "$Recycle.Bin" };
+
+                // 直接位于根目录下的受保护目录（如 C:\Windows）
+                // 注意：root 与 dir 都需 TrimEnd('\\')，否则 "C:" 与 "C:\" 永不相等的旧 bug 会让守卫失效
+                var dir = (Path.GetDirectoryName(full) ?? "").TrimEnd('\\');
                 if (dir.Equals(root, StringComparison.OrdinalIgnoreCase))
                 {
                     var name = Path.GetFileName(full);
-                    var protectedNames = new[] { "Windows", "Program Files", "Program Files (x86)", "System Volume Information", "$Recycle.Bin" };
                     if (protectedNames.Any(p => name.Equals(p, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                }
+
+                // 防御纵深：任何位于受保护目录之下的路径（如 C:\Windows\System32）同样拒绝
+                foreach (var p in protectedNames)
+                {
+                    var prefix = root + "\\" + p;
+                    if (full.Equals(prefix, StringComparison.OrdinalIgnoreCase) ||
+                        full.StartsWith(prefix + "\\", StringComparison.OrdinalIgnoreCase))
                         return true;
                 }
             }
@@ -307,23 +319,34 @@ namespace DiskCleaner.Elevated
                 Marshal.Copy(ptr, argv, 0, argc);
                 var tokens = new string[argc];
                 for (int i = 0; i < argc; i++) tokens[i] = Marshal.PtrToStringUni(argv[i]);
-                if (tokens.Length != 2) return false;
 
-                var action = tokens[0].ToLowerInvariant();
-                var target = tokens[1].Trim('"', '\'');
-
-                if (action == "/x" || action == "-x")
-                    return Regex.IsMatch(target, @"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
-
-                if (action == "/uninstall" || action == "-uninstall")
+                // 形式一：动作与目标连写，如 /X{GUID}（注册表常见形态，仅一个 token）
+                // 注意：必须与 SoftwareManager 保持一致，否则提权卸载路径会错误地拒绝合法卸载
+                if (tokens.Length == 1)
                 {
-                    if (target.StartsWith("\\\\")) return false;
-                    if (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                        target.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-                        target.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase))
-                        return false;
-                    return target.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) &&
-                           Regex.IsMatch(target, @"^[A-Za-z]:\\");
+                    return Regex.IsMatch(tokens[0] ?? "",
+                        @"^[-/][xX]\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
+                }
+
+                // 形式二：动作与目标分开，必须恰好两个 token（拒绝任何多余开关）
+                if (tokens.Length == 2)
+                {
+                    var action = tokens[0].ToLowerInvariant();
+                    var target = tokens[1].Trim('"', '\'');
+
+                    if (action == "/x" || action == "-x")
+                        return Regex.IsMatch(target, @"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
+
+                    if (action == "/uninstall" || action == "-uninstall")
+                    {
+                        if (target.StartsWith("\\\\")) return false;
+                        if (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                            target.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                            target.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        return target.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) &&
+                               Regex.IsMatch(target, @"^[A-Za-z]:\\");
+                    }
                 }
                 return false;
             }
