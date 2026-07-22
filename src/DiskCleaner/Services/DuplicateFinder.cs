@@ -26,7 +26,7 @@ namespace DiskCleaner.Services
                 ReportProgress(0, "正在收集文件列表...");
 
                 // 第1步：收集所有符合条件的文件
-                var allFiles = new List<FileInfo>();
+                var allFiles = new List<FileMeta>();
                 var stack = new Stack<string>();
                 var visitedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 stack.Push(rootPath);
@@ -49,9 +49,8 @@ namespace DiskCleaner.Services
                             ct.ThrowIfCancellationRequested();
                             try
                             {
-                                var fi = new FileInfo(file);
-                                if (fi.Length >= MinFileSize)
-                                    allFiles.Add(fi);
+                                if (NativeMethods.TryGetFileMeta(file, out var meta) && meta.Length >= MinFileSize)
+                                allFiles.Add(meta);
                             }
                             catch { }
                         }
@@ -97,7 +96,7 @@ namespace DiskCleaner.Services
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    var hashGroups = new Dictionary<string, List<FileInfo>>();
+                    var hashGroups = new Dictionary<string, List<FileMeta>>();
                     foreach (var fi in group)
                     {
                         ct.ThrowIfCancellationRequested();
@@ -105,7 +104,7 @@ namespace DiskCleaner.Services
                         {
                             string hash = ComputeHashChunked(fi.FullName, ct);
                             if (!hashGroups.ContainsKey(hash))
-                                hashGroups[hash] = new List<FileInfo>();
+                                hashGroups[hash] = new List<FileMeta>();
                             hashGroups[hash].Add(fi);
                         }
                         catch (OperationCanceledException) { throw; }
@@ -121,14 +120,14 @@ namespace DiskCleaner.Services
                             WasteBytes = group.Key * (kv.Value.Count - 1)
                         };
                         bool first = true;
-                        foreach (var fi in kv.Value.OrderBy(f => f.LastWriteTime))
+                        foreach (var fi in kv.Value.OrderBy(f => f.LastModified))
                         {
                             dupGroup.Files.Add(new DuplicateFile
                             {
                                 FilePath = fi.FullName,
                                 FileName = fi.Name,
-                                Directory = fi.DirectoryName,
-                                LastModified = fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm"),
+                                Directory = Path.GetDirectoryName(fi.FullName),
+                                LastModified = fi.LastModified,
                                 KeepThis = first
                             });
                             first = false;

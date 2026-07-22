@@ -358,7 +358,12 @@ namespace DiskCleaner.Services
                     return p.ExitCode == 0;
                 });
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                // N6：原静默吞异常，现记录以便观测（R6 观测性）
+                Logger.Warning($"FlushDns 执行失败: {ex.Message}");
+                return false;
+            }
         }
     }
 }

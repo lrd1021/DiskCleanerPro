@@ -44,7 +44,8 @@ namespace DiskCleaner.Elevated
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"操作失败: {ex.Message}");
-                return 1;
+			Audit("main", string.Join(" ", args), "exception: " + ex.Message, 1);
+			return 1;
             }
         }
 
@@ -72,17 +73,20 @@ namespace DiskCleaner.Elevated
                 return 1;
             }
 
-            if (!CreateSymbolicLink(linkPath, targetPath, SYMLINK_FLAG_FILE))
+            Audit("symlink", $"{linkPath} -> {targetPath}", "start", 0);
+			if (!CreateSymbolicLink(linkPath, targetPath, SYMLINK_FLAG_FILE))
             {
                 var err = Marshal.GetLastWin32Error();
                 Console.Error.WriteLine($"CreateSymbolicLink 失败: {err}");
-                return 1;
+				Audit("symlink", $"{linkPath} -> {targetPath}", "fail", err);
+			return 1;
             }
 
-            return 0;
-        }
+            Audit("symlink", $"{linkPath} -> {targetPath}", "success", 0);
+			return 0;
+		}
 
-        // ── delete <path> ──
+		// ── delete <path> ──
         private static int Delete(string[] args)
         {
             if (args.Length != 2)
@@ -101,11 +105,14 @@ namespace DiskCleaner.Elevated
             if (IsProtectedRoot(path))
             {
                 Console.Error.WriteLine("拒绝删除受保护根目录");
-                return 1;
+			Audit("delete", path, "blocked-protected", 1);
+			return 1;
             }
 
-            DeleteRecursive(path);
-            return 0;
+            Audit("delete", path, "start", 0);
+			DeleteRecursive(path);
+			Audit("delete", path, "success", 0);
+			return 0;
         }
 
         private static void DeleteRecursive(string path)
@@ -155,7 +162,9 @@ namespace DiskCleaner.Elevated
             }
 
             string resolvedFile;
-            bool isMsi = Path.GetFileName(fileName).Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase);
+            // N2 加固：同时识别无扩展名的 "msiexec"，避免其误落入信任检查分支（报告 N2）
+            bool isMsi = Path.GetFileName(fileName).Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase)
+                       || Path.GetFileName(fileName).Equals("msiexec", StringComparison.OrdinalIgnoreCase);
             if (isMsi)
             {
                 resolvedFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe");
@@ -185,9 +194,18 @@ namespace DiskCleaner.Elevated
                 CreateNoWindow = false
             };
 
-            Process.Start(psi);
-            return 0;
-        }
+            using var process = Process.Start(psi);
+			if (process == null)
+			{
+				Audit("uninstall", commandLine, "start-failed", 1);
+				return 1;
+			}
+			process.WaitForExit();
+			int code = process.ExitCode;
+			bool ok = code == 0 || code == 3010;
+			Audit("uninstall", commandLine, ok ? "success" : "fail", code);
+			return ok ? 0 : code;
+		}
 
         // ── 工具方法 ──
 
@@ -198,7 +216,7 @@ namespace DiskCleaner.Elevated
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
 
-        private static bool IsLocalPath(string path)
+        internal static bool IsLocalPath(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return false;
             if (path.StartsWith("\\\\")) return false;
@@ -209,7 +227,7 @@ namespace DiskCleaner.Elevated
             return true;
         }
 
-        private static bool IsProtectedRoot(string path)
+        internal static bool IsProtectedRoot(string path)
         {
             try
             {
@@ -285,7 +303,7 @@ namespace DiskCleaner.Elevated
             return true;
         }
 
-        private static bool IsTrustworthyUninstaller(string path)
+        internal static bool IsTrustworthyUninstaller(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
             string fullPath;
@@ -308,7 +326,7 @@ namespace DiskCleaner.Elevated
             return IsAuthenticodeSigned(fullPath);
         }
 
-        private static bool IsSafeMsiUninstall(string msiArgs)
+        internal static bool IsSafeMsiUninstall(string msiArgs)
         {
             if (string.IsNullOrWhiteSpace(msiArgs)) return false;
             var ptr = CommandLineToArgvW(msiArgs.Trim(), out int argc);
@@ -351,6 +369,35 @@ namespace DiskCleaner.Elevated
                 return false;
             }
             finally { LocalFree(ptr); }
+        }
+
+                // ── 审计日志（N1） ──
+        private static void Audit(string op, string detail, string result, int code)
+        {
+            try
+            {
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DiskCleanerPro", "logs");
+                Directory.CreateDirectory(dir);
+                var file = Path.Combine(dir, "elevated-" + DateTime.Now.ToString("yyyyMMdd") + ".log");
+                var q = (char)0x22;
+                var line = "{" + q + "ts" + q + ":" + q
+                         + DateTime.Now.ToString("O") + q + "," + q + "op" + q + ":" + q
+                         + EscapeJson(op) + q + "," + q + "detail" + q + ":" + q
+                         + EscapeJson(detail) + q + "," + q + "result" + q + ":" + q
+                         + EscapeJson(result) + q + "," + q + "code" + q + ":" + code + "}" + Environment.NewLine;
+                File.AppendAllText(file, line);
+            }
+            catch { }
+        }
+
+        private static string EscapeJson(string s)
+        {
+            if (s == null) return "";
+            return s.Replace(((char)0x5C).ToString(), new string((char)0x5C, 2))
+                  .Replace(((char)0x22).ToString(), new string(new char[] { (char)0x5C, (char)0x22 }))
+                  .Replace(new string((char)0x0D, 1), new string(new char[] { (char)0x5C, (char)0x72 }))
+                  .Replace(new string((char)0x0A, 1), new string(new char[] { (char)0x5C, (char)0x6E }))
+                  .Replace(new string((char)0x09, 1), new string(new char[] { (char)0x5C, (char)0x74 }));
         }
 
         // ── P/Invoke ──

@@ -67,3 +67,21 @@ dotnet bin/Debug/net8.0-windows/DiskCleaner.SmokeTest.dll
 ## 七、真机交互回归（R16）
 
 按 `R16-real-machine-regression.md` 在带管理员权限的真实 Windows 机器上点验步骤 2–8（约 10–15 分钟）。
+
+## 八、第四轮复检（recheck4）闭环补充
+
+本轮在 R12/R15/R16 闭环基础上，依据 `R4_recheck_report.md` 补齐第四轮新增发现（N1–N7）：
+
+- **构建与冒烟均复跑通过**：`dotnet build DiskCleanerPro.sln -c Debug` **0 警告 / 0 错误**；冒烟 **9 / 9 通过**（退出码 0）。
+- **N4（原 GA 阻塞）**：`Program.Uninstall` 改为 `WaitForExit()` 并回传 msiexec 真实退出码，UI 不再把“已启动”误报为“成功”。
+- **N1（去重）**：`SoftwareManager.IsSafeMsiUninstall` 与 `IsTrustworthyUninstaller` 委托 `DiskCleaner.Elevated.Program` 权威实现，消除双份逻辑绕过窗口。
+- **N2（加固）**：主端/Helper 的 `isMsi` 判定均接受无扩展名 `msiexec`。
+- **N3（守卫统一）**：`ElevationHelper.IsProtectedPath` 委托 `Program.IsProtectedRoot`；`GetHelperPath` 加同目录 + Authenticode 校验（告警级）。
+- **N5（工程化）**：`DiskCleanerPro.sln` 纳入 `DiskCleaner.SmokeTest`，CI 编译其。
+- **N6（观测）**：`FlushDnsAsync` 的 `catch` 记 `Logger.Warning`；`RunElevated` 加请求/结果/取消/失败日志。
+- **审计（N1/N7）**：提权子进程新增 JSON Lines 审计（`%LocalAppData%/DiskCleanerPro/logs/elevated-*.log`）。
+- **Logger.Escape（N3安）**：转义覆盖全部关键控制字符与 `<0x20`，防注入/截断。
+- **R12（复检）**：`DuplicateFinder` 热循环由 `List<FileInfo>` 改为 `List<FileMeta>`。
+
+> 复跑方式：`export PATH="$HOME/.dotnet:$PATH"` → `dotnet build DiskCleanerPro.sln -c Debug` → `dotnet src/DiskCleaner.SmokeTest/bin/Debug/net8.0-windows/DiskCleaner.SmokeTest.dll`，退出码 0 = 全通过。
+> 发布包已重新 `publish/`（自包含 win-x64，无 pdb），含上述全部修复。

@@ -25,6 +25,39 @@
 | R15 | 冒烟工程接入 git/CI | ✅ 闭环（本轮） | `git init` + `.gitignore` + `.github/workflows/build-and-smoke.yml` + 初始提交 |
 | R16 | 真机交互回归 | 🟡 部分闭环（本轮） | **无头覆盖**：Elevated helper 守卫（本地路径/受保护根/MsiExec）已入冒烟；**交互执行需真机**（见 `R16-real-machine-regression.md`） |
 
+---
+
+## 上线前第四轮复检（pre-launch-recheck4 / N1–N7）整改状态
+
+> 评审基线：第三轮 🔴 No-Go（GA）/🟡 条件Go（受限Beta）；本轮复检评级 **🟡 有条件通过（Conditional Pass）**，0 Critical / 0 High。
+> 以下为复检报告（`R4_recheck_report.md`）第四轮新增发现的整改映射。
+
+| 编号 | 严重度 | 主题 | 状态 | 关键改动 |
+|------|--------|------|------|----------|
+| N1 | 中 | MSI 白名单逻辑重复（DRY） | ✅ 闭环 | `SoftwareManager.IsSafeMsiUninstall` 与 `IsTrustworthyUninstaller` 均**委托** `DiskCleaner.Elevated.Program` 权威实现，单一来源，消除“需保持一致”的绕过窗口 |
+| N2 | 低 | `isMsi` 仅精确匹配 `msiexec.exe` | ✅ 闭环 | 主端 `SoftwareManager` 与 Helper `Program` 均将无扩展名 `msiexec` 也识别为 MSI，避免误入信任检查分支 |
+| N3 | 低 | `IsProtectedPath` 与 `IsProtectedRoot` 语义不一致 | ✅ 闭环 | `ElevationHelper.IsProtectedPath` 直接委托 `Program.IsProtectedRoot`（权威“根目录或受保护目录之下”语义） |
+| N4 | 低 | 提权卸载 fire-and-forget（**原 GA 阻塞**） | ✅ 闭环 | `Program.Uninstall` 改为 `WaitForExit()` 并回传 msiexec 退出码（`0`/`3010`=成功，其余=失败），UI 可区分“已启动/成功” |
+| N5 | 低 | SmokeTest 未纳入 `.sln` | ✅ 闭环 | `DiskCleanerPro.sln` 加入 `DiskCleaner.SmokeTest` 工程（GUID 固定），CI 编译其；`AssemblyInfo` 加 `InternalsVisibleTo` 暴露守卫方法 |
+| N6 | 低 | `FlushDnsAsync` 静默吞异常 | ✅ 闭环 | `TempFileCleaner.FlushDnsAsync` 的 `catch` 改为 `Logger.Warning`（R6 观测性） |
+| N7 | 低 | 空 `catch` 约 13 处（严）+ 多处带注 catch | ⚠️ 部分 | 提权子进程新增 **JSON Lines 审计**（`delete`/`uninstall`/`symlink`/异常），落盘 `%LocalAppData%/DiskCleanerPro/logs/elevated-*.log`；`RunElevated` 增加请求/结果/取消/失败结构化日志；其余多为预期内的权限跳过（按报告可接受），未逐一插桩 |
+
+> **N4 原列 GA 阻塞项**：修复后 UI 不再把“已启动”误报为“成功”——`ElevationHelper.UninstallElevated` 拿到的退出码由 Helper `WaitForExit` 真实回传。
+> **N2 完整性校验**：`ElevationHelper.GetHelperPath` 现校验 helper 必须位于主程序同目录，并调用 `NativeMethods.IsAuthenticodeSigned` 校验（沙箱/调试环境无证书链仅告警、不阻断；**正式发版须对 helper 做 Authenticode 签名**，属 GA 发布门禁之一）。
+> **Logger.Escape 加固（N3安）**：`Logger.Escape` 重写，对 `" \ \r \n \t \b \f` 及 `<0x20` 控制字符转义为 `\uXXXX`，消除审计/日志注入与截断风险。
+
+## 本轮（2026-07-23 复检4 整改）改动
+
+1. **N4**：`DiskCleaner.Elevated/Program.cs` 的 `Uninstall` 增加 `process.WaitForExit()` 并读取 `ExitCode`，成功判定 `0` 或 `3010`，失败回传真实退出码。
+2. **N1（去重）**：`SoftwareManager.IsSafeMsiUninstall` 与 `IsTrustworthyUninstaller` 改为委托 `DiskCleaner.Elevated.Program` 的同名 `internal static` 实现；`Program` 中对应方法可见性升为 `internal`。
+3. **N2（加固）**：`SoftwareManager` 与 `Program` 的 `isMsi` 判定均接受 `msiexec.exe` 与 `msiexec`（无扩展名）。
+4. **N3（守卫统一）**：`ElevationHelper.IsProtectedPath` 委托 `Program.IsProtectedRoot`；`GetHelperPath` 加同目录校验 + Authenticode 校验（告警级）。
+5. **N5（工程化）**：`DiskCleanerPro.sln` 纳入 `DiskCleaner.SmokeTest`；`AssemblyInfo` 暴露 `InternalsVisibleTo("DiskCleaner.SmokeTest")` 与 `("DiskCleanerPro")`。
+6. **N6（观测）**：`TempFileCleaner.FlushDnsAsync` 的 `catch` 记 `Logger.Warning`；`RunElevated` 增加请求/结果/取消/失败日志。
+7. **R12（复检）**：`DuplicateFinder` 热循环由 `List<FileInfo>` 改为 `List<FileMeta>`（`NativeMethods.TryGetFileMeta`），去除 per-file `FileInfo` 分配。
+8. **审计（N1/N7 观测）**：`Program` 新增 `Audit(...)` 写 JSON Lines 审计日志（含 `EscapeJson`），覆盖 symlink/delete/uninstall/顶层异常。
+9. **Logger.Escape（N3安）**：转义覆盖全部关键控制字符与 `<0x20`，防注入/截断。
+
 ## 本轮（2026-07-23）改动
 
 1. **R12**：`NativeMethods` 增加 `FileMeta` 只读 struct、`GetFileAttributesEx` P/Invoke、`TryGetFileMeta`；`DiskAnalyzer.BuildNode` 与 `GetDirectorySizeFast` 改用 `TryGetFileMeta`，消除热循环中的 `FileInfo` 分配。

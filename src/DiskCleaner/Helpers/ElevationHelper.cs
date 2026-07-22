@@ -41,6 +41,8 @@ namespace DiskCleaner.Helpers
             foreach (var a in args)
                 arguments.Append(' ').Append(EscapeArgument(a));
 
+            Logger.Info($"elevated request: {command} {arguments}");
+
             var psi = new ProcessStartInfo
             {
                 FileName = helperPath,
@@ -55,15 +57,18 @@ namespace DiskCleaner.Helpers
                 using var process = Process.Start(psi);
                 if (process == null) return 1;
                 process.WaitForExit();
+                Logger.Info($"elevated result: {command} exit={process.ExitCode}");
                 return process.ExitCode;
             }
             catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
                 // 用户取消 UAC
+                Logger.Info($"elevated cancelled (UAC): {command}");
                 return 1223;
             }
             catch (Exception ex)
             {
+                Logger.Error($"启动 ElevatedHelper 失败: {command}", ex);
                 MessageBox.Show($"启动 ElevatedHelper 失败：{ex.Message}",
                     "DiskCleaner Pro", MessageBoxButton.OK, MessageBoxImage.Error);
                 return 1;
@@ -75,17 +80,12 @@ namespace DiskCleaner.Helpers
         {
             try
             {
-                var full = Path.GetFullPath(path);
-                var parts = full.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
-                return parts.Any(p =>
-                    p.Equals("Windows", StringComparison.OrdinalIgnoreCase) ||
-                    p.Equals("Program Files", StringComparison.OrdinalIgnoreCase) ||
-                    p.Equals("Program Files (x86)", StringComparison.OrdinalIgnoreCase));
+                // 委托给 Elevated helper 的权威实现，统一为「根目录或受保护目录之下」语义（N3）。
+                return DiskCleaner.Elevated.Program.IsProtectedRoot(path);
             }
             catch { return false; }
         }
 
-        /// <summary>尝试以管理员权限删除文件或目录（用于系统/受保护目录）</summary>
         public static bool DeleteElevated(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return false;
@@ -113,9 +113,28 @@ namespace DiskCleaner.Helpers
                 var mainModule = Process.GetCurrentProcess().MainModule?.FileName;
                 if (string.IsNullOrEmpty(mainModule)) return null;
                 var dir = Path.GetDirectoryName(mainModule);
-                return Path.Combine(dir, "DiskCleaner.Elevated.exe");
+                var helperPath = Path.Combine(dir, "DiskCleaner.Elevated.exe");
+
+                // N2：位置校验——helper 必须位于主程序同目录，防止路径注入/替换
+                if (!string.Equals(Path.GetFullPath(Path.GetDirectoryName(helperPath)),
+                                    Path.GetFullPath(dir), StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Error($"ElevatedHelper 路径异常，拒绝启动: {helperPath}");
+                    return null;
+                }
+
+                // N2：完整性/签名校验。沙箱或调试环境通常无有效证书链，此时仅告警不阻断；
+                // 正式发版须对 helper 做 Authenticode 签名。
+                if (!NativeMethods.IsAuthenticodeSigned(helperPath))
+                    Logger.Warning($"ElevatedHelper 未通过 Authenticode 校验（沙箱/调试环境常见）: {helperPath}");
+
+                return helperPath;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Logger.Error("ElevatedHelper 路径/完整性校验异常", ex);
+                return null;
+            }
         }
 
         private static string EscapeArgument(string arg)

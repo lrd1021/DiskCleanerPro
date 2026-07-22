@@ -150,7 +150,9 @@ namespace DiskCleaner.Services
                     return false;
                 }
 
-                bool isMsi = Path.GetFileName(fileName).Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase);
+                // N2 加固：同时识别无扩展名的 "msiexec"（与 Elevated helper 保持一致）
+                bool isMsi = Path.GetFileName(fileName).Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase)
+                           || Path.GetFileName(fileName).Equals("msiexec", StringComparison.OrdinalIgnoreCase);
                 string resolvedFile = fileName;
                 if (isMsi)
                 {
@@ -300,69 +302,18 @@ namespace DiskCleaner.Services
         /// </summary>
         private static bool IsTrustworthyUninstaller(string path)
         {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
-
-            string fullPath;
-            try { fullPath = Path.GetFullPath(path); }
-            catch { return false; }
-
-            var dir = Path.GetDirectoryName(fullPath) ?? "";
-            var trustedRoots = new[]
-            {
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                Environment.GetFolderPath(Environment.SpecialFolder.Windows)
-            };
-            bool inTrusted = trustedRoots.Any(r =>
-                !string.IsNullOrEmpty(r) &&
-                (dir.StartsWith(r, StringComparison.OrdinalIgnoreCase) ||
-                 fullPath.StartsWith(r, StringComparison.OrdinalIgnoreCase)));
-            if (!inTrusted) return false;
-
-            return NativeMethods.IsAuthenticodeSigned(fullPath);
+            // 委托给 Elevated helper 的权威实现，避免两份逻辑不一致（报告 N1）
+            return DiskCleaner.Elevated.Program.IsTrustworthyUninstaller(path);
         }
 
         /// <summary>
         /// 严格校验 MsiExec 参数：仅允许 /X{GUID} 或 /uninstall <本地.msi>，
         /// 任何其他动作、额外开关、远程目标一律拒绝。
         /// </summary>
-        private static bool         IsSafeMsiUninstall(string msiArgs)
+        private static bool IsSafeMsiUninstall(string msiArgs)
         {
-            if (string.IsNullOrWhiteSpace(msiArgs)) return false;
-
-            var ptr = NativeMethods.CommandLineToArgvW(msiArgs.Trim(), out int argc);
-            if (ptr == IntPtr.Zero || argc == 0) return false;
-            try
-            {
-                var argv = new IntPtr[argc];
-                Marshal.Copy(ptr, argv, 0, argc);
-                var tokens = new List<string>(argc);
-                for (int i = 0; i < argc; i++)
-                    tokens.Add(Marshal.PtrToStringUni(argv[i]));
-
-                // 形式一：动作与目标连写，如 /X{GUID}（仅一个 token，注册表常见形态）
-                if (tokens.Count == 1)
-                {
-                    return System.Text.RegularExpressions.Regex.IsMatch(
-                        tokens[0] ?? "",
-                        @"^[-/][xX]\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
-                }
-
-                // 形式二：动作与目标分开，必须恰好两个 token（拒绝任何多余开关）
-                if (tokens.Count == 2)
-                {
-                    var action = tokens[0].ToLowerInvariant();
-                    var target = tokens[1].Trim('"', '\'');
-                    if (action == "/x" || action == "-x") return IsGuid(target);
-                    if (action == "/uninstall" || action == "-uninstall") return IsLocalMsiPath(target);
-                }
-
-                return false;
-            }
-            finally
-            {
-                NativeMethods.LocalFree(ptr);
-            }
+            // 委托给 Elevated helper 的权威实现，避免两份逻辑不一致（报告 #3）。
+            return DiskCleaner.Elevated.Program.IsSafeMsiUninstall(msiArgs);
         }
 
         private static bool IsGuid(string s)

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 
 namespace DiskCleaner.Helpers
 {
@@ -46,10 +47,31 @@ namespace DiskCleaner.Helpers
             }
         }
 
-        private static string Escape(string s)
+                                private static string Escape(string s)
         {
             if (s == null) return "";
-            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            var sb = new StringBuilder(s.Length + 8);
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case (char)0x22: sb.Append((char)0x5C); sb.Append((char)0x22); break;
+                    case (char)0x5C: sb.Append((char)0x5C); sb.Append((char)0x5C); break;
+                    case (char)0x0D: sb.Append((char)0x5C); sb.Append((char)0x72); break;
+                    case (char)0x0A: sb.Append((char)0x5C); sb.Append((char)0x6E); break;
+                    case (char)0x09: sb.Append((char)0x5C); sb.Append((char)0x74); break;
+                    case (char)0x08: sb.Append((char)0x5C); sb.Append((char)0x62); break;
+                    case (char)0x0C: sb.Append((char)0x5C); sb.Append((char)0x66); break;
+                    default:
+                        if (c < 0x20) { sb.Append((char)0x5C); sb.Append((char)0x75); sb.Append(((int)c).ToString("x4")); }
+                        else sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
         }
+
+
+
     }
 }
