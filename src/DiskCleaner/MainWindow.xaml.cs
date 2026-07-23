@@ -39,5 +39,13 @@ namespace DiskCleaner
         {
             new SettingsWindow { Owner = this }.ShowDialog();
         }
+
+        // ── 自定义标题栏按钮（WindowChrome 接管后系统按钮隐藏，需自绘）──
+        private void BtnMin_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+        private void BtnMax_Click(object sender, RoutedEventArgs e) =>
+            WindowState = (WindowState == WindowState.Maximized) ? WindowState.Normal : WindowState.Maximized;
+
+        private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
     }
 }

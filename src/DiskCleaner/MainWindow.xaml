@@ -1,19 +1,48 @@
 <Window x:Class="DiskCleaner.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="DiskCleaner Pro — C盘清理工具"
         Height="720" Width="1100"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BackgroundBrush}"
-        MinHeight="600" MinWidth="900">
+        MinHeight="600" MinWidth="900"
+        shell:WindowChrome.WindowChrome="{StaticResource MainChrome}">
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="36" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="230" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
+        <!-- 自定义标题栏（暗色，与程序一致，消除启动白屏）-->
+        <Grid Grid.Row="0" Grid.ColumnSpan="2" Background="{StaticResource BackgroundBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                <TextBlock Text="DiskCleaner Pro" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13" FontWeight="SemiBold" />
+                <TextBlock Text="— C盘清理工具" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="6,0,0,0" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="BtnMin" Click="BtnMin_Click" Width="44" Height="36"
+                        shell:WindowChrome.IsHitTestVisibleInChrome="True" Style="{StaticResource TitleBarButton}"
+                        FontFamily="Segoe UI" FontSize="14" Content="—" />
+                <Button x:Name="BtnMax" Click="BtnMax_Click" Width="44" Height="36"
+                        shell:WindowChrome.IsHitTestVisibleInChrome="True" Style="{StaticResource TitleBarButton}"
+                        FontFamily="Segoe UI" FontSize="13" Content="▢" />
+                <Button x:Name="BtnClose" Click="BtnClose_Click" Width="44" Height="36"
+                        shell:WindowChrome.IsHitTestVisibleInChrome="True" Style="{StaticResource TitleBarCloseButton}"
+                        FontFamily="Segoe UI" FontSize="13" Content="✕" />
+            </StackPanel>
+        </Grid>
+
         <!-- 左侧导航栏 — Grid 4 行布局 -->
-        <Border Grid.Column="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0">
+        <Border Grid.Row="1" Grid.Column="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -98,7 +127,7 @@
         </Border>
 
         <!-- 右侧内容区域 -->
-        <Grid Grid.Column="1">
+        <Grid Grid.Row="1" Grid.Column="1">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
