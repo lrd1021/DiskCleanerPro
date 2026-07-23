@@ -436,14 +436,35 @@ namespace DiskCleaner.Elevated
             catch { }
         }
 
+        // #12 修复：原 EscapeJson 仅转义 \ " CR LF TAB，未覆盖 BS(0x08)/FF(0x0C)
+        // 及其它 <0x20 控制字符，极端情况下会破坏审计 JSON Lines。改为与 Logger.Escape
+        // 一致的完整转义：\" \\ 以及所有控制字符（命名转义 + \uXXXX 兜底）。
         private static string EscapeJson(string s)
         {
             if (s == null) return "";
-            return s.Replace(((char)0x5C).ToString(), new string((char)0x5C, 2))
-                  .Replace(((char)0x22).ToString(), new string(new char[] { (char)0x5C, (char)0x22 }))
-                  .Replace(new string((char)0x0D, 1), new string(new char[] { (char)0x5C, (char)0x72 }))
-                  .Replace(new string((char)0x0A, 1), new string(new char[] { (char)0x5C, (char)0x6E }))
-                  .Replace(new string((char)0x09, 1), new string(new char[] { (char)0x5C, (char)0x74 }));
+            var sb = new StringBuilder(s.Length + 8);
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case (char)0x22: sb.Append((char)0x5C); sb.Append((char)0x22); break;
+                    case (char)0x5C: sb.Append((char)0x5C); sb.Append((char)0x5C); break;
+                    case (char)0x0D: sb.Append((char)0x5C); sb.Append((char)0x72); break;
+                    case (char)0x0A: sb.Append((char)0x5C); sb.Append((char)0x6E); break;
+                    case (char)0x09: sb.Append((char)0x5C); sb.Append((char)0x74); break;
+                    case (char)0x08: sb.Append((char)0x5C); sb.Append((char)0x62); break;
+                    case (char)0x0C: sb.Append((char)0x5C); sb.Append((char)0x66); break;
+                    default:
+                        if (c < 0x20)
+                        {
+                            sb.Append((char)0x5C); sb.Append((char)0x75);
+                            sb.Append(((int)c).ToString("x4"));
+                        }
+                        else sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
         }
 
         // ── P/Invoke ──
