@@ -107,15 +107,15 @@ namespace DiskCleaner.Services
                     }
                     else
                     {
-                        // 单个目标单独加超时，避免某个目录（如指向离线/网络位置的失效 junction）阻塞导致整轮扫描卡死
-                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                        linked.CancelAfter(TimeSpan.FromSeconds(120));
+                        // 注意：不设置超时跳过。用户要求完整扫描某个目录、不因超时而跳过该目录；
+                        // 仅保留用户主动取消（ct）的能力。当前枚举不跟随重解析点（junction/符号链接），
+                        // 已规避原"失效网络 junction 阻塞"的卡死风险，无需超时兜底。
                         long totalSize = 0;
                         int totalFiles = 0;
                         foreach (var path in target.Paths)
                         {
                             var (size, count) = await Task.Run(
-                                () => GetDirectorySize(path, linked.Token, target.Name, i, total), linked.Token);
+                                () => GetDirectorySize(path, ct, target.Name, i, total), ct);
                             totalSize += size;
                             totalFiles += count;
                         }
@@ -124,16 +124,9 @@ namespace DiskCleaner.Services
                         target.Status = $"共 {totalFiles} 个文件";
                     }
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-                {
-                    // 超时触发的取消——跳过该目标，不中断整轮扫描
-                    target.Status = "文件过多，已快速跳过";
-                    target.SizeBytes = 0;
-                    target.FileCount = 0;
-                    Logger.Warning($"临时文件扫描超时（>120s），已跳过目标：{target.Name}");
-                }
                 catch (OperationCanceledException)
                 {
+                    // 仅用户主动取消会进入此分支（已移除超时自动跳过），整轮扫描取消
                     target.Status = "已取消";
                     throw;
                 }
@@ -203,9 +196,7 @@ namespace DiskCleaner.Services
             public bool IsDirectory { get; }
         }
 
-        // 极端文件数下的保护性硬上限（正常不会触发）：满足"完整扫描、不跳过"需求的同时，
-        // 防止个别目录因文件数百万导致 UI 长时间无响应。
-        private const int MaxFilesPerTarget = 2000000;
+        // 扫描不做文件数上限、不超时跳过：按用户要求完整扫描每个目录（仅用户主动取消可中断）。
 
         private (long size, int count) GetDirectorySize(string path, CancellationToken ct,
             string targetName = null, int targetIndex = 0, int targetTotal = 1)
@@ -228,12 +219,7 @@ namespace DiskCleaner.Services
                     if (targetName != null && ((++scanned) & 0xFF) == 0)
                         OnProgress?.Invoke(-1, $"扫描 {targetName}：已扫描 {count} 个文件");
 
-                    // 极端文件数下的保护性硬上限（正常不会触发），满足"完整扫描、不跳过"需求
-                    if (count >= MaxFilesPerTarget)
-                    {
-                        Logger.Warning($"临时文件目录文件数超过上限 {MaxFilesPerTarget}，提前结束统计：{path}");
-                        break;
-                    }
+                    // 完整扫描：不设置文件数上限、不超时跳过，按用户要求把该目录所有文件统计完
                 }
             }
             catch (OperationCanceledException) { throw; }
