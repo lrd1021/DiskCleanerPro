@@ -127,7 +127,9 @@ namespace DiskCleaner.Services
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     // 超时触发的取消——跳过该目标，不中断整轮扫描
-                    target.Status = "扫描超时，已跳过";
+                    target.Status = "文件过多，已快速跳过";
+                    target.SizeBytes = 0;
+                    target.FileCount = 0;
                     Logger.Warning($"临时文件扫描超时（>120s），已跳过目标：{target.Name}");
                 }
                 catch (OperationCanceledException)
@@ -189,6 +191,9 @@ namespace DiskCleaner.Services
             return (totalFreed, totalDeleted);
         }
 
+        // 单个目录扫描上限：超过此数量认为“文件极多”，直接停止并触发超时路径，避免 UI 长时间无响应
+        private const int MaxFilesPerTarget = 100000;
+
         private (long size, int count) GetDirectorySize(string path, CancellationToken ct,
             string targetName = null, int targetIndex = 0, int targetTotal = 1)
         {
@@ -202,18 +207,26 @@ namespace DiskCleaner.Services
                 foreach (var file in EnumerateFilesSafe(path, ct))
                 {
                     ct.ThrowIfCancellationRequested();
-                    try
+
+                    // 用 Win32 GetFileAttributesEx 一次性取大小，避免 new FileInfo 的额外 I/O 与对象分配，
+                    // 对 Temp 目录中大量小文件（浏览器缓存、更新碎片等）扫描速度显著提升。
+                    if (NativeMethods.TryGetFileMeta(file, out var meta))
                     {
-                        size += new FileInfo(file).Length;
+                        size += meta.Length;
                         count++;
                     }
-                    catch (IOException) { }
-                    catch (UnauthorizedAccessException) { }
 
-                    // 增量进度：每 512 个文件上报一次，让进度文本实时滚动
+                    // 增量进度：每 256 个文件上报一次，让进度文本实时滚动
                     // pct=-1 表示仅更新文本、不推进总进度条（避免在大目录扫描时进度条长时间冻结）
-                    if (targetName != null && ((++scanned) & 0x1FF) == 0)
+                    if (targetName != null && ((++scanned) & 0xFF) == 0)
                         OnProgress?.Invoke(-1, $"扫描 {targetName}：已扫描 {count} 个文件");
+
+                    // 文件极多时主动提前结束，把控制权交还 UI，避免单目录卡住
+                    if (count >= MaxFilesPerTarget)
+                    {
+                        Logger.Warning($"临时文件目录文件数超过上限 {MaxFilesPerTarget}，提前结束统计：{path}");
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { throw; }

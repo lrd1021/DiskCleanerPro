@@ -4,6 +4,7 @@
 
 # === 自包含发布产物（可通过 dotnet publish 重新生成，约 160MB，不入库）===
 publish/
+publish-preview/
 
 # === 工具/评审缓存 ===
 .gstack/
