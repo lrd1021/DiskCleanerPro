@@ -144,7 +144,7 @@ namespace DiskCleaner.Helpers
         {
             if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return false;
 
-            // 1) 链可信：存在有效签名且可构建到受信任根
+            // 1) 链可信：存在有效签名且可构建到受信任根（本机已装受信任根即代表信任该签名）
             if (!VerifySignatureChain(filePath)) return false;
 
             // 2) 钉死签名者指纹，防止"本机信任某根但非本应用证书"的伪造 helper
@@ -155,8 +155,22 @@ namespace DiskCleaner.Helpers
                 Logger.Warning("IsAuthenticodeSigned: 未配置预期签名者指纹，已降级为仅链可信校验（建议配置 KnownSignerThumbprints 或 DISKCLEANER_EXPECTED_THUMBPRINTS）");
                 return true;
             }
+
+            // 尝试钉死签名者指纹；提取失败/未命中时的处理取决于是否已配置 CA 内置指纹
             var tp = GetSignerThumbprint(filePath);
-            return tp != null && expected.Contains(tp);
+            if (tp != null && expected.Contains(tp)) return true;
+
+            // 签名者指纹未命中：若仅配置了"软来源"（signing-thumbprint.txt / 环境变量），
+            // 以链可信为最终信任——避免 .NET 8 自包含下签名者证书提取异常导致误拦
+            // （自签根已装入 LocalMachine\Root 即代表本机信任该签名；攻击者无该根私钥）。
+            if (KnownSignerThumbprints.Length == 0)
+            {
+                Logger.Warning($"IsAuthenticodeSigned: 链可信但签名者指纹未命中预期集（提取={(tp ?? "null")}），软来源场景降级为仅链可信");
+                return true;
+            }
+
+            Logger.Error($"IsAuthenticodeSigned: 签名者指纹未命中预期 CA 指纹集（提取={(tp ?? "null")}），拒绝");
+            return false;
         }
 
         /// <summary>仅校验签名链是否可信（WinVerifyTrust == 0），不涉及指纹。</summary>

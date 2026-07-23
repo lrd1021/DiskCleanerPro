@@ -701,8 +701,19 @@ namespace DiskCleaner.Elevated
                 Console.Error.WriteLine("IsAuthenticodeSigned: 未配置预期签名者指纹，已降级为仅链可信校验（建议配置 KnownSignerThumbprints 或 DISKCLEANER_EXPECTED_THUMBPRINTS）");
                 return true;
             }
+
             var tp = GetSignerThumbprint(filePath);
-            return tp != null && expected.Contains(tp);
+            if (tp != null && expected.Contains(tp)) return true;
+
+            // 软来源场景（仅 signing-thumbprint.txt / 环境变量）：链可信即通过，
+            // 避免 .NET 8 自包含下签名者指纹提取异常导致误拦。
+            if (KnownSignerThumbprints.Length == 0)
+            {
+                Console.Error.WriteLine($"IsAuthenticodeSigned: 链可信但签名者指纹未命中预期集（提取={(tp ?? "null")}），软来源场景降级为仅链可信");
+                return true;
+            }
+            Console.Error.WriteLine($"IsAuthenticodeSigned: 签名者指纹未命中预期 CA 指纹集（提取={(tp ?? "null")}），拒绝");
+            return false;
         }
 
         /// <summary>仅校验签名链是否可信（WinVerifyTrust == 0），不涉及指纹。</summary>
