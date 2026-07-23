@@ -104,7 +104,7 @@ namespace DiskCleaner.Helpers
         // ── Authenticode 数字签名校验 ──
 
         private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 =
-            new Guid("{00AAC56B-CD44-11d3-8A2E-0090278082FC}");
+            new Guid("{00AAC56B-CD44-11d3-8A2E-00902781C19B}");
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct WINTRUST_FILE_INFO

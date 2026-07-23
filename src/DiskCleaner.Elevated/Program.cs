@@ -653,7 +653,7 @@ namespace DiskCleaner.Elevated
         private static extern IntPtr LocalFree(IntPtr hMem);
 
         private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 =
-            new Guid("{00AAC56B-CD44-11d3-8A2E-0090278082FC}");
+            new Guid("{00AAC56B-CD44-11d3-8A2E-00902781C19B}");
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct WINTRUST_FILE_INFO
