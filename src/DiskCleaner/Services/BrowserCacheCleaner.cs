@@ -170,10 +170,13 @@ namespace DiskCleaner.Services
                     foreach (var f in SafeGetAllFiles(path))
                     {
                         ct.ThrowIfCancellationRequested();
-                        try { size += new FileInfo(f).Length; } catch { }
+                        try { size += new FileInfo(f).Length; } catch (IOException) { } catch (UnauthorizedAccessException) { }
                     }
                 }
-                catch { }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    Logger.Warning($"统计受保护目录大小失败 [{path}]: {ex.Message}");
+                }
                 if (ElevationHelper.DeleteElevated(path))
                     return (size, 1);
                 return (0, 0);
@@ -205,7 +208,7 @@ namespace DiskCleaner.Services
                     freed += size;
                     deleted++;
                 }
-                catch { /* 文件可能被浏览器占用 */ }
+                catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
 
             // 清理空目录（仅永久删除模式）；不跟随交接点，避免误删其目标目录
@@ -234,7 +237,8 @@ namespace DiskCleaner.Services
                                 dirStack.Push(full);
                             });
                         }
-                        catch { /* */ }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
                     }
                     ordered.Sort((a, b) => b.Length.CompareTo(a.Length));
                     foreach (var dir in ordered)
@@ -245,10 +249,14 @@ namespace DiskCleaner.Services
                             if (!Directory.EnumerateFileSystemEntries(dir).Any())
                                 Directory.Delete(dir, false);
                         }
-                        catch { /* */ }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
                     }
                 }
-                catch { /* */ }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    Logger.Warning($"清理空目录失败 [{path}]: {ex.Message}");
+                }
             }
 
             return (freed, deleted);
@@ -288,7 +296,8 @@ namespace DiskCleaner.Services
                         }
                     }, ct);
                 }
-                catch { /* 无权限 / 目录消失 */ }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
             }
             return (size, count);
         }
@@ -323,7 +332,8 @@ namespace DiskCleaner.Services
                         }
                     });
                 }
-                catch { /* 无权限 / 目录消失 */ }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
                 foreach (var f in files) yield return f;
             }
         }

@@ -75,7 +75,10 @@ namespace DiskCleaner.Services
                             }
                         }, ct);
                     }
-                    catch { /* 无权限 / 目录消失 */ }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        Logger.Warning($"大文件扫描目录失败: {ex.Message}");
+                    }
 
                     if (scanned % 500 == 0)
                         OnProgress?.Invoke(-1, $"已扫描 {scanned} 个文件，找到 {result.Count} 个大文件");
@@ -176,14 +179,14 @@ namespace DiskCleaner.Services
                 {
                     task.Status = MoveTask.MoveStatus.Skipped;
                     // 清理半成品
-                    try { if (File.Exists(targetPath)) File.Delete(targetPath); } catch { }
+                    try { if (File.Exists(targetPath)) File.Delete(targetPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
                 catch (Exception ex)
                 {
                     task.Status = MoveTask.MoveStatus.Failed;
                     OnProgress?.Invoke(100, $"失败：{ex.Message}");
                     // 清理半成品
-                    try { if (File.Exists(targetPath)) File.Delete(targetPath); } catch { }
+                    try { if (File.Exists(targetPath)) File.Delete(targetPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
             }, ct);
 

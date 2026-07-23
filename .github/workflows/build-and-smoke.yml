@@ -32,7 +32,11 @@ jobs:
         run: dotnet run --project src/DiskCleaner.SmokeTest --configuration Release
 
       - name: Publish self-contained (Release)
-        run: dotnet publish src/DiskCleaner/DiskCleaner.csproj -c Release -r win-x64 --self-contained true -o ./publish
+        # 主程序与提权助手分别发布到同一输出目录，确保 DiskCleaner.Elevated.exe
+        # 也是自包含（干净目标机即使未装 .NET 8 也能启动，P1 打包项）。
+        run: |
+          dotnet publish src/DiskCleaner/DiskCleaner.csproj -c Release -r win-x64 --self-contained true -o ./publish
+          dotnet publish src/DiskCleaner.Elevated/DiskCleaner.Elevated.csproj -c Release -r win-x64 --self-contained true -o ./publish
 
       - name: Verify publish artifacts
         shell: pwsh
@@ -46,4 +50,12 @@ jobs:
             Write-Error "net6.0 artifacts found in publish output: $($net6 -join ', ')"
             exit 1
           }
-          Write-Host "Publish OK: no PDB, no net6.0 artifacts"
+          if (-not (Test-Path ./publish/DiskCleaner.Elevated.exe)) {
+            Write-Error "DiskCleaner.Elevated.exe missing from publish output"
+            exit 1
+          }
+          if (-not (Test-Path ./publish/coreclr.dll)) {
+            Write-Error "coreclr.dll missing - Elevated helper is NOT self-contained"
+            exit 1
+          }
+          Write-Host "Publish OK: no PDB, no net6.0 artifacts, Elevated helper self-contained"
