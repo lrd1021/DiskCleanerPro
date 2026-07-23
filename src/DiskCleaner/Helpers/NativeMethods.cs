@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace DiskCleaner.Helpers
 {
@@ -263,6 +264,78 @@ namespace DiskCleaner.Helpers
                 Path.GetExtension(path),
                 lwt == DateTime.MinValue ? "" : lwt.ToString("yyyy-MM-dd HH:mm"));
             return true;
+        }
+
+        // ── 快速目录枚举（FindFirstFile/FindNextFile，枚举即取大小）──
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        internal struct WIN32_FIND_DATA
+        {
+            public FileAttributes dwFileAttributes;
+            public FILETIME ftCreationTime;
+            public FILETIME ftLastAccessTime;
+            public FILETIME ftLastWriteTime;
+            public uint nFileSizeHigh;
+            public uint nFileSizeLow;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string cFileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)]
+            public string cAlternateFileName;
+        }
+
+        public static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern IntPtr FindFirstFileW(string lpFileName, out WIN32_FIND_DATA lpFindFileData);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool FindNextFileW(IntPtr hFindFile, out WIN32_FIND_DATA lpFindFileData);
+
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool FindClose(IntPtr hFindFile);
+
+        /// <summary>
+        /// 目录项（FindFirstFile/FindNextFile 在枚举时即可直接拿到文件大小，无需对每文件再调一次 stat，
+        /// 相比 Directory.EnumerateFiles + GetFileAttributesEx 减少一半系统调用，显著提升大目录扫描速度）。
+        /// </summary>
+        public struct FindEntry
+        {
+            public string Name;
+            public bool IsDirectory;
+            public bool IsReparsePoint;
+            public long Size;
+        }
+
+        /// <summary>
+        /// 用 FindFirstFileW/FindNextFileW 原生枚举目录项，回调中直接提供文件大小（无需二次 stat）。
+        /// 不跳过任何隐藏/系统文件，仅由调用方决定如何处理重解析点。
+        /// </summary>
+        internal static void ForEachEntry(string directory, Action<FindEntry> action, CancellationToken ct = default)
+        {
+            var data = new WIN32_FIND_DATA();
+            IntPtr h = FindFirstFileW(Path.Combine(directory, "*"), out data);
+            if (h == INVALID_HANDLE_VALUE) return;
+            try
+            {
+                do
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var attrs = data.dwFileAttributes;
+                    action(new FindEntry
+                    {
+                        Name = data.cFileName,
+                        IsDirectory = (attrs & FileAttributes.Directory) != 0,
+                        IsReparsePoint = (attrs & FileAttributes.ReparsePoint) != 0,
+                        Size = ((long)data.nFileSizeHigh << 32) | data.nFileSizeLow
+                    });
+                } while (FindNextFileW(h, out data));
+            }
+            finally
+            {
+                FindClose(h);
+            }
         }
     }
 }

@@ -191,16 +191,27 @@ namespace DiskCleaner.Services
             return (totalFreed, totalDeleted);
         }
 
-        // 单个目录扫描上限：超过此数量认为“文件极多”，直接停止并触发超时路径，避免 UI 长时间无响应
-        private const int MaxFilesPerTarget = 100000;
+        // 枚举得到的单个文件项（路径+大小由 FindFirstFile/FindNextFile 一次枚举直接给出，无需二次 stat）
+        private readonly struct FileEntry
+        {
+            public FileEntry(string fullName, long size, bool isDirectory)
+            {
+                FullName = fullName; Size = size; IsDirectory = isDirectory;
+            }
+            public string FullName { get; }
+            public long Size { get; }
+            public bool IsDirectory { get; }
+        }
+
+        // 极端文件数下的保护性硬上限（正常不会触发）：满足"完整扫描、不跳过"需求的同时，
+        // 防止个别目录因文件数百万导致 UI 长时间无响应。
+        private const int MaxFilesPerTarget = 2000000;
 
         private (long size, int count) GetDirectorySize(string path, CancellationToken ct,
             string targetName = null, int targetIndex = 0, int targetTotal = 1)
         {
             long size = 0;
             int count = 0;
-            if (!Directory.Exists(path)) return (0, 0);
-
             int scanned = 0;
             try
             {
@@ -208,20 +219,16 @@ namespace DiskCleaner.Services
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    // 用 Win32 GetFileAttributesEx 一次性取大小，避免 new FileInfo 的额外 I/O 与对象分配，
-                    // 对 Temp 目录中大量小文件（浏览器缓存、更新碎片等）扫描速度显著提升。
-                    if (NativeMethods.TryGetFileMeta(file, out var meta))
-                    {
-                        size += meta.Length;
-                        count++;
-                    }
+                    // 大小已由 FindFirstFile/FindNextFile 在枚举时直接给出，无需对每个文件再调一次 stat
+                    size += file.Size;
+                    count++;
 
                     // 增量进度：每 256 个文件上报一次，让进度文本实时滚动
                     // pct=-1 表示仅更新文本、不推进总进度条（避免在大目录扫描时进度条长时间冻结）
                     if (targetName != null && ((++scanned) & 0xFF) == 0)
                         OnProgress?.Invoke(-1, $"扫描 {targetName}：已扫描 {count} 个文件");
 
-                    // 文件极多时主动提前结束，把控制权交还 UI，避免单目录卡住
+                    // 极端文件数下的保护性硬上限（正常不会触发），满足"完整扫描、不跳过"需求
                     if (count >= MaxFilesPerTarget)
                     {
                         Logger.Warning($"临时文件目录文件数超过上限 {MaxFilesPerTarget}，提前结束统计：{path}");
@@ -236,22 +243,12 @@ namespace DiskCleaner.Services
             return (size, count);
         }
 
-        private IEnumerable<string> EnumerateFilesSafe(string path, CancellationToken ct)
+        private IEnumerable<FileEntry> EnumerateFilesSafe(string path, CancellationToken ct)
         {
-            // 关键修复：用 EnumerationOptions 让操作系统在枚举层面直接跳过重解析点（junction/符号链接），
-            // 避免对每个子目录调用 File.GetAttributes —— 该调用在指向离线/网络位置的失效重解析点上可能阻塞（SMB 超时可达数分钟），
-            // 正是导致"扫描卡死"的根因。改用原生跳过后既安全又不会卡。
-            var opts = new EnumerationOptions
-            {
-                IgnoreInaccessible = true,
-                // 关键：保留 .NET 默认对 Hidden|System 的跳过（等价于原 Directory.GetFiles 默认行为，避免枚举大量隐藏/系统文件拖慢扫描），
-                // 叠加 ReparsePoint 跳过（防卡死，等价于原 File.GetAttributes 检查 junction 的逻辑）。
-                // 注意：不要只写 ReparsePoint，否则会覆盖掉默认的 Hidden|System 跳过，导致枚举量暴涨、扫描变慢。
-                AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System,
-                RecurseSubdirectories = false,
-                BufferSize = 4096
-            };
-
+            // 用 FindFirstFile/FindNextFile 原生枚举：每个文件仅一次系统调用即可同时拿到路径与大小，
+            // 相比 Directory.EnumerateFiles + 逐个 GetFileAttributesEx 减少一半系统调用，大目录扫描速度显著提升。
+            // 不跳过任何隐藏/系统文件（用户要求完整扫描）；仅不跟随重解析点（junction/符号链接），
+            // 避免误入被指向的系统目录或在其上阻塞（等价于原 File.GetAttributes 检查 junction 的安全性）。
             var stack = new Stack<string>();
             stack.Push(path);
 
@@ -259,32 +256,31 @@ namespace DiskCleaner.Services
             {
                 ct.ThrowIfCancellationRequested();
                 var current = stack.Pop();
-                IEnumerable<string> files = null, dirs = null;
 
-                try { files = Directory.EnumerateFiles(current, "*", opts); }
+                var entries = new List<FileEntry>();
+                try
+                {
+                    NativeMethods.ForEachEntry(current, e =>
+                    {
+                        if (e.Name == "." || e.Name == "..") return;   // 跳过自身与父目录，防止递归死循环
+                        if (e.IsReparsePoint) return;                  // 不跟随重解析点（安全）
+                        entries.Add(new FileEntry(
+                            Path.Combine(current, e.Name),
+                            e.Size,
+                            e.IsDirectory));
+                    }, ct);
+                }
+                catch (OperationCanceledException) { throw; }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
-                catch (Exception) { }
 
-                if (files != null)
-                    foreach (var f in files)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        yield return f;
-                    }
-
-                try { dirs = Directory.EnumerateDirectories(current, "*", opts); }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
-                catch (Exception) { }
-
-                if (dirs != null)
-                    foreach (var d in dirs)
-                    {
-                        // 重解析点已被 AttributesToSkip 在枚举层过滤，这里无需再调用 File.GetAttributes
-                        ct.ThrowIfCancellationRequested();
-                        stack.Push(d);
-                    }
+                foreach (var e in entries)
+                {
+                    if (e.IsDirectory)
+                        stack.Push(e.FullName);
+                    else
+                        yield return e;
+                }
             }
         }
 
@@ -309,19 +305,18 @@ namespace DiskCleaner.Services
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    var fi = new FileInfo(file);
-                    long fileSize = fi.Length;
+                    long fileSize = file.Size;
 
                     if (permanent)
                     {
-                        fi.Delete();
+                        new FileInfo(file.FullName).Delete();
                     }
                     else
                     {
                         // 走回收站；失败则跳过（不静默永久删除）
-                        if (!NativeMethods.SendToRecycleBin(file, out var err))
+                        if (!NativeMethods.SendToRecycleBin(file.FullName, out var err))
                         {
-                            Logger.Warning($"回收站删除失败 [{file}]: 0x{err:X}");
+                            Logger.Warning($"回收站删除失败 [{file.FullName}]: 0x{err:X}");
                             continue;
                         }
                     }
