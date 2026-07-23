@@ -10,7 +10,7 @@ namespace DiskCleaner.Models
     {
         private bool _isSelected;
         private long _sizeBytes;
-        private int _fileCount;
+        private long _fileCount;
         private bool _isScanning;
         private string _status;
 
@@ -38,7 +38,7 @@ namespace DiskCleaner.Models
             }
         }
 
-        public int FileCount
+        public long FileCount
         {
             get => _fileCount;
             set => Set(ref _fileCount, value);

@@ -111,7 +111,7 @@ namespace DiskCleaner.Services
                         // 仅保留用户主动取消（ct）的能力。当前枚举不跟随重解析点（junction/符号链接），
                         // 已规避原"失效网络 junction 阻塞"的卡死风险，无需超时兜底。
                         long totalSize = 0;
-                        int totalFiles = 0;
+                        long totalFiles = 0;
                         foreach (var path in target.Paths)
                         {
                             var (size, count) = await Task.Run(
@@ -198,11 +198,11 @@ namespace DiskCleaner.Services
 
         // 扫描不做文件数上限、不超时跳过：按用户要求完整扫描每个目录（仅用户主动取消可中断）。
 
-        private (long size, int count) GetDirectorySize(string path, CancellationToken ct,
+        private (long size, long count) GetDirectorySize(string path, CancellationToken ct,
             string targetName = null, int targetIndex = 0, int targetTotal = 1)
         {
             long size = 0;
-            int count = 0;
+            long count = 0;
             int scanned = 0;
             try
             {
@@ -235,8 +235,12 @@ namespace DiskCleaner.Services
             // 相比 Directory.EnumerateFiles + 逐个 GetFileAttributesEx 减少一半系统调用，大目录扫描速度显著提升。
             // 不跳过任何隐藏/系统文件（用户要求完整扫描）；仅不跟随重解析点（junction/符号链接），
             // 避免误入被指向的系统目录或在其上阻塞（等价于原 File.GetAttributes 检查 junction 的安全性）。
+            // 防环：同一目录只压栈一次（大小写不敏感）。目录树若出现循环链接（symlink/junction 指回祖先），
+            // 没有此集合会无限重复遍历、文件计数暴涨到数亿且永不结束——这正是"扫了几亿文件仍不结束"的根因。
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var stack = new Stack<string>();
             stack.Push(path);
+            visited.Add(path);
 
             while (stack.Count > 0)
             {
@@ -263,7 +267,15 @@ namespace DiskCleaner.Services
                 foreach (var e in entries)
                 {
                     if (e.IsDirectory)
+                    {
+                        // 防环：已访问过的目录不再压栈（应对重解析点判定万一失效或特殊挂载点导致的循环）
+                        if (!visited.Add(e.FullName))
+                        {
+                            Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{e.FullName}");
+                            continue;
+                        }
                         stack.Push(e.FullName);
+                    }
                     else
                         yield return e;
                 }
