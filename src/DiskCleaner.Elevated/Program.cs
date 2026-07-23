@@ -19,22 +19,24 @@ namespace DiskCleaner.Elevated
     {
         static int Main(string[] args)
         {
-            // 自检：必须以管理员运行
-            if (!IsElevated())
+            if (args.Length < 1)
+            {
+                Console.Error.WriteLine("用法: DiskCleaner.Elevated <symlink|delete|uninstall|verifyaudit> ...");
+                return 1;
+            }
+
+            var verb = args[0].ToLowerInvariant();
+
+            // 自检：写操作必须以管理员运行；verifyaudit 为只读验证，无需提权
+            if (verb != "verifyaudit" && !IsElevated())
             {
                 Console.Error.WriteLine("Elevated helper 必须以管理员权限运行");
                 return 0x4C7; // ERROR_CANCELLED
             }
 
-            if (args.Length < 1)
-            {
-                Console.Error.WriteLine("用法: DiskCleaner.Elevated <symlink|delete|uninstall> ...");
-                return 1;
-            }
-
             try
             {
-                return args[0].ToLowerInvariant() switch
+                return verb switch
                 {
                     "symlink" => Symlink(args),
                     "delete" => Delete(args),

@@ -110,16 +110,26 @@ namespace DiskCleaner.Helpers
         {
             try
             {
-                var mainModule = Process.GetCurrentProcess().MainModule?.FileName;
-                if (string.IsNullOrEmpty(mainModule)) return null;
-                var dir = Path.GetDirectoryName(mainModule);
+                // 使用 AppContext.BaseDirectory（应用部署目录）而非 Process.MainModule：
+                // 通过 dotnet 宿主启动（dotnet DiskCleanerPro.dll / dotnet run）时，
+                // MainModule 指向 dotnet.exe 所在目录，会把 helper 路径解析到错误位置。
+                var dir = AppContext.BaseDirectory;
+                if (string.IsNullOrEmpty(dir)) return null;
                 var helperPath = Path.Combine(dir, "DiskCleaner.Elevated.exe");
 
-                // N2：位置校验——helper 必须位于主程序同目录，防止路径注入/替换
+                // N2：位置校验——helper 必须位于应用部署目录，防止路径注入/替换
                 if (!string.Equals(Path.GetFullPath(Path.GetDirectoryName(helperPath)),
-                                    Path.GetFullPath(dir), StringComparison.OrdinalIgnoreCase))
+                                    Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar),
+                                    StringComparison.OrdinalIgnoreCase))
                 {
                     Logger.Error($"ElevatedHelper 路径异常，拒绝启动: {helperPath}");
+                    return null;
+                }
+
+                // 先区分"文件不存在"与"签名校验失败"，避免误导性的 Authenticode 报错
+                if (!File.Exists(helperPath))
+                {
+                    Logger.Error($"未找到 ElevatedHelper: {helperPath}");
                     return null;
                 }
 
