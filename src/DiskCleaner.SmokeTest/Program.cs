@@ -35,6 +35,7 @@ namespace DiskCleaner.SmokeTest
                 Run("SoftwareManager_可信卸载程序(反射)", SoftwareManager_TrustGuard);
                 Run("SoftwareManager_拒绝危险MsiExec(行为)", SoftwareManager_RejectUnsafeMsi);
                 Run("ElevatedHelper_守卫(反射, R16)", ElevatedHelper_Guards);
+                Run("ElevationHelper_N2_Release签名阻断", ElevationHelper_N2_ReleaseBlocking);
             }
             catch (Exception ex)
             {
@@ -267,6 +268,36 @@ namespace DiskCleaner.SmokeTest
             Console.WriteLine("        (Elevated helper 守卫 12 项断言全部通过)");
         }
 
+        static void ElevationHelper_N2_ReleaseBlocking()
+        {
+            // N2：Release 构建下，未签名的 Elevated helper 必须被 ElevationHelper 阻断
+            // （GetHelperPath 返回 null），防止被替换/篡改。本机以 Release 构建且 helper 未签名，
+            // 应验证阻断策略真实生效。DEBUG 构建下未签名仅告警不阻断，故分构建断言。
+            var t = typeof(DiskCleaner.Helpers.ElevationHelper);
+            var getHelper = t.GetMethod("GetHelperPath", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert(getHelper != null, "找不到 GetHelperPath");
+
+            // 自行推导 helper 路径以判断其是否已签名（GetHelperPath 阻断时返回 null，无法直接取）
+            var mainModule = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+            var dir = Path.GetDirectoryName(mainModule);
+            var expectedHelper = Path.Combine(dir ?? "", "DiskCleaner.Elevated.exe");
+            var isAuth = typeof(DiskCleaner.Helpers.NativeMethods).GetMethod("IsAuthenticodeSigned", BindingFlags.Public | BindingFlags.Static);
+            bool signed = isAuth != null && File.Exists(expectedHelper) && (bool)isAuth.Invoke(null, new object[] { expectedHelper });
+
+            var helperPath = (string)getHelper.Invoke(null, null);
+
+#if DEBUG
+            // DEBUG：未签名仅告警，应放行（返回路径）
+            Console.WriteLine($"        (DEBUG 构建: 签名={signed}, GetHelperPath={(helperPath ?? "null")}) — 未签名仅告警");
+#else
+            if (!signed)
+                Assert(helperPath == null, "Release 下未签名 helper 应被阻断(GetHelperPath 返回 null)");
+            else
+                Assert(helperPath != null, "Release 下已签名 helper 应被放行");
+#endif
+            Console.WriteLine($"        (N2 签名校验: 签名={signed}, 阻断={helperPath == null})");
+        }
+
         // ---------- 工具 ----------
 
         static int CountFiles(object node)
@@ -290,6 +321,8 @@ namespace DiskCleaner.SmokeTest
 
         static bool TryMakeJunction(string junction, string target)
         {
+            // 优先 cmd mklink /J（需管理员）；失败则回退 PowerShell New-Item -ItemType Junction
+            // （非管理员环境下可用，保证交接点守卫在无头沙箱中也能被真实执行而非跳过）。
             try
             {
                 var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /J \"{junction}\" \"{target}\"")
@@ -299,9 +332,30 @@ namespace DiskCleaner.SmokeTest
                     RedirectStandardError = true,
                     CreateNoWindow = true
                 };
-                using var p = System.Diagnostics.Process.Start(psi);
-                p?.WaitForExit(5000);
-                return p != null && p.ExitCode == 0 && Directory.Exists(junction);
+                using (var p = System.Diagnostics.Process.Start(psi))
+                {
+                    p?.WaitForExit(5000);
+                    if (p != null && p.ExitCode == 0 && Directory.Exists(junction))
+                        return true;
+                }
+            }
+            catch { /* 回退 */ }
+
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("powershell",
+                    $"-NoProfile -Command \"New-Item -ItemType Junction -Path '{junction}' -Target '{target}' -Force\"")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using (var p = System.Diagnostics.Process.Start(psi))
+                {
+                    p?.WaitForExit(5000);
+                    return p != null && p.ExitCode == 0 && Directory.Exists(junction);
+                }
             }
             catch { return false; }
         }
