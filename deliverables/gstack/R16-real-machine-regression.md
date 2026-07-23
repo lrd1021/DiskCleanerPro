@@ -107,3 +107,17 @@ dotnet run --project src\DiskCleaner.SmokeTest --configuration Release
 | 回收站真实入站 / 取消 UAC 后保留 | — | ✅ 步骤 3/4 |
 | Authenticode 真实证书链校验 | — | ✅ 步骤 8 |
 | 符号链接建链（需 SeCreateSymbolicLinkPrivilege） | — | ✅ 步骤 5 |
+
+---
+
+## 证据归档与透明度（指向 validation 文档）
+
+本手册的真机点验结论已归档至 **`deliverables/R16-real-machine-validation.md`**，该文档含完整的「证据归档与透明度」小节，显式标注以下**带外采信**项，避免「声明与代码不符」：
+
+- **UAC 弹窗 / 取消 UAC 后文件保留**：依赖真实 Windows 桌面会话，沙箱/CI 无法自动化，以人工点验 + 截图为准（带外采信）。
+- **回收站真实入站**：真机点验（带外采信）。
+- **Authenticode 真机证书链**：沙箱中 `IsAuthenticodeSigned` 因缺根证书链返回 false（设计预期），真机点验方为权威（带外采信）。
+- **CI run URL**：本开发沙箱无外网/GH_TOKEN/origin，无法直推 GitHub Actions；采用本机等价流水线（`deliverables/CI-equivalent-run.md`）作为 CI 带外采信证据。
+- **双 exe 签名（A1）**：已提供 `scripts/sign-binaries.ps1` + CI 签名/断言门禁，真实签名待用户证书（GA 前置）。
+
+> 说明：步骤 2–8 的真机点验为**人工带外采信**，非代码/CI 自动断言；其底层守卫逻辑（ElevationHelper、IsProtectedRoot fail-closed、MsiExec 白名单、交接点 visited 守卫）已在无头冒烟 + 源码 `file:line` 层双重确认 intact。

@@ -279,7 +279,7 @@ namespace DiskCleaner.Services
                 }
             }
 
-            // 回退：API 不可用时的简单解析
+            // 回退：API 不可用时仍需正确处理无引号但含空格的路径（如 C:\Program Files\Foo\uninstall.exe /S）。
             var trimmed = commandLine.Trim();
             if (trimmed.StartsWith("\""))
             {
@@ -291,6 +291,31 @@ namespace DiskCleaner.Services
                     return true;
                 }
             }
+
+            // 从后往前探测最长存在的可执行文件路径，避免按空格切分把 Program Files 截断
+            string candidate = trimmed;
+            string args = "";
+            while (!string.IsNullOrEmpty(candidate))
+            {
+                var ext = Path.GetExtension(candidate);
+                if ((ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".msi", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".bat", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase)) &&
+                    File.Exists(candidate))
+                {
+                    fileName = candidate;
+                    arguments = args.Trim();
+                    return true;
+                }
+
+                int lastSpace = candidate.LastIndexOf(' ');
+                if (lastSpace < 0) break;
+                args = candidate.Substring(lastSpace + 1) + (string.IsNullOrEmpty(args) ? "" : " " + args);
+                candidate = candidate.Substring(0, lastSpace).TrimEnd();
+            }
+
+            // 最后回退：按第一个空格切分（至少不会比原来更差）
             var parts = trimmed.Split(new[] { ' ' }, 2);
             fileName = parts[0];
             arguments = parts.Length > 1 ? parts[1] : "";

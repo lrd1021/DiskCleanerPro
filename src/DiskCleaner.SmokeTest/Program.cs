@@ -250,6 +250,9 @@ namespace DiskCleaner.SmokeTest
             Assert(P(@"C:\Program Files (x86)"), "Program Files (x86) 应被识别");
             Assert(!P(@"C:\Users\me\junk"), "用户目录不应被误判为受保护根");
             Assert(!P(@"C:\Temp\junk"), "普通 C:\\Temp 不应被误判为受保护根");
+            // B2 止血回归：用户/数据卷根本身须受保护（防误删整个卷），但子树正常清理不拦
+            Assert(P(@"C:\Users"), "C:\\Users 根应被识别为受保护根（防误删整个用户卷）");
+            Assert(P(@"C:\ProgramData"), "C:\\ProgramData 根应被识别为受保护根");
             // 可用性 P2：Windows 下的可清理临时目录不应被过度拦截，但 System32 等仍须拦截
             Assert(!P(@"C:\Windows\Temp"), "Windows\\Temp 临时目录不应被误判为受保护根");
             Assert(!P(@"C:\Windows\Temp\junk"), "Windows\\Temp 子目录不应被误判为受保护根");

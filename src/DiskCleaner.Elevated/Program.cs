@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -294,7 +295,16 @@ namespace DiskCleaner.Elevated
                 var root = (Path.GetPathRoot(full) ?? "").TrimEnd('\\');
                 if (full.Equals(root, StringComparison.OrdinalIgnoreCase)) return true;
 
-                var protectedNames = new[] { "Windows", "Program Files", "Program Files (x86)", "System Volume Information", "$Recycle.Bin" };
+                // 受保护的系统根目录（拒绝清单止血，B2）：
+                // - protectedTreeNames：整棵子树受保护（系统目录，删除其下任何内容都危险）。
+                // - protectedRootOnlyNames：仅根本身受保护（用户/数据卷根，防"误删整个卷"灾难性操作，
+                //   但允许其下正常清理，如 C:\Users\xxx\AppData\Local\Temp）。
+                // 例外：Windows 下的已知安全临时目录（如 Windows\Temp）经 IsAllowedUnderWindows 放行。
+                var protectedTreeNames = new[] {
+                    "Windows", "Program Files", "Program Files (x86)", "System Volume Information", "$Recycle.Bin",
+                    "Boot", "PerfLogs", "Intel", "Config.Msi", "Recovery", "EFI", "MSOCache", "OEM"
+                };
+                var protectedRootOnlyNames = new[] { "Users", "ProgramData", "All Users", "Documents and Settings" };
 
                 // 直接位于根目录下的受保护目录（如 C:\Windows）
                 // 注意：root 与 dir 都需 TrimEnd('\\')，否则 "C:" 与 "C:\" 永不相等的旧 bug 会让守卫失效
@@ -302,12 +312,14 @@ namespace DiskCleaner.Elevated
                 if (dir.Equals(root, StringComparison.OrdinalIgnoreCase))
                 {
                     var name = Path.GetFileName(full);
-                    if (protectedNames.Any(p => name.Equals(p, StringComparison.OrdinalIgnoreCase)))
+                    if (protectedTreeNames.Any(p => name.Equals(p, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                    if (protectedRootOnlyNames.Any(p => name.Equals(p, StringComparison.OrdinalIgnoreCase)))
                         return true;
                 }
 
                 // 防御纵深：任何位于受保护目录之下的路径（如 C:\Windows\System32）同样拒绝
-                foreach (var p in protectedNames)
+                foreach (var p in protectedTreeNames)
                 {
                     var prefix = root + "\\" + p;
                     if (full.Equals(prefix, StringComparison.OrdinalIgnoreCase) ||
@@ -672,9 +684,30 @@ namespace DiskCleaner.Elevated
         [DllImport("wintrust.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid pgActionID, ref WINTRUST_DATA pWVTData);
 
+        /// <summary>内置已知签名者指纹（发布 CA 证书时填入；自签场景留空，由 signing-thumbprint.txt / 环境变量提供）。</summary>
+        private static readonly string[] KnownSignerThumbprints = new string[0];
+
         private static bool IsAuthenticodeSigned(string filePath)
         {
             if (!File.Exists(filePath)) return false;
+
+            // 1) 链可信：存在有效签名且可构建到受信任根
+            if (!VerifySignatureChain(filePath)) return false;
+
+            // 2) 钉死签名者指纹，防止"本机信任某根但非本应用证书"的伪造 helper（B3）
+            var expected = LoadExpectedSignerThumbprints();
+            if (expected.Count == 0)
+            {
+                Console.Error.WriteLine("IsAuthenticodeSigned: 未配置预期签名者指纹，已降级为仅链可信校验（建议配置 KnownSignerThumbprints 或 DISKCLEANER_EXPECTED_THUMBPRINTS）");
+                return true;
+            }
+            var tp = GetSignerThumbprint(filePath);
+            return tp != null && expected.Contains(tp);
+        }
+
+        /// <summary>仅校验签名链是否可信（WinVerifyTrust == 0），不涉及指纹。</summary>
+        private static bool VerifySignatureChain(string filePath)
+        {
             var fileInfo = new WINTRUST_FILE_INFO
             {
                 cbStruct = Marshal.SizeOf<WINTRUST_FILE_INFO>(),
@@ -700,6 +733,39 @@ namespace DiskCleaner.Elevated
             }
             catch { return false; }
             finally { if (trustData.pFile != IntPtr.Zero) Marshal.FreeHGlobal(trustData.pFile); }
+        }
+
+        /// <summary>提取 PE 文件 Authenticode 签名者证书指纹（大写十六进制）；无签名/失败返回 null。</summary>
+        private static string GetSignerThumbprint(string filePath)
+        {
+            try
+            {
+                var cert = X509Certificate.CreateFromSignedFile(filePath);
+                using var x2 = new X509Certificate2(cert);
+                return x2.Thumbprint;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>加载预期签名者指纹集合：内置常量 ∪ 环境变量 DISKCLEANER_EXPECTED_THUMBPRINTS ∪ signing-thumbprint.txt（自签产物，gitignore）。</summary>
+        private static HashSet<string> LoadExpectedSignerThumbprints()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in KnownSignerThumbprints)
+                if (!string.IsNullOrWhiteSpace(t)) set.Add(t.Trim());
+            var env = Environment.GetEnvironmentVariable("DISKCLEANER_EXPECTED_THUMBPRINTS");
+            if (!string.IsNullOrWhiteSpace(env))
+                foreach (var t in env.Split(';'))
+                    if (!string.IsNullOrWhiteSpace(t)) set.Add(t.Trim());
+            try
+            {
+                var f = Path.Combine(AppContext.BaseDirectory, "signing-thumbprint.txt");
+                if (File.Exists(f))
+                    foreach (var line in File.ReadAllLines(f))
+                        if (!string.IsNullOrWhiteSpace(line)) set.Add(line.Trim());
+            }
+            catch { }
+            return set;
         }
     }
 }

@@ -118,15 +118,20 @@ namespace DiskCleaner.Helpers
                 // 通过 dotnet 宿主启动（dotnet DiskCleanerPro.dll / dotnet run）时，
                 // MainModule 指向 dotnet.exe 所在目录，会把 helper 路径解析到错误位置。
                 var dir = AppContext.BaseDirectory;
-                if (string.IsNullOrEmpty(dir)) return null;
+                if (string.IsNullOrEmpty(dir))
+                {
+                    Logger.Error("ElevatedHelper: AppContext.BaseDirectory 为空");
+                    return null;
+                }
                 var helperPath = Path.Combine(dir, "DiskCleaner.Elevated.exe");
+                Logger.Info($"ElevatedHelper 候选路径: {helperPath}");
 
                 // N2：位置校验——helper 必须位于应用部署目录，防止路径注入/替换
-                if (!string.Equals(Path.GetFullPath(Path.GetDirectoryName(helperPath)),
-                                    Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar),
-                                    StringComparison.OrdinalIgnoreCase))
+                var helperDir = Path.GetFullPath(Path.GetDirectoryName(helperPath) ?? "");
+                var baseDir = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar);
+                if (!string.Equals(helperDir, baseDir, StringComparison.OrdinalIgnoreCase))
                 {
-                    Logger.Error($"ElevatedHelper 路径异常，拒绝启动: {helperPath}");
+                    Logger.Error($"ElevatedHelper 路径异常，拒绝启动: helperDir={helperDir}, baseDir={baseDir}");
                     return null;
                 }
 
@@ -144,7 +149,7 @@ namespace DiskCleaner.Helpers
 #if DEBUG
                     Logger.Warning($"ElevatedHelper 未通过 Authenticode 校验（沙箱/调试环境常见）: {helperPath}");
 #else
-                    Logger.Error($"ElevatedHelper 未通过 Authenticode 校验，拒绝启动: {helperPath}");
+                    Logger.Error($"ElevatedHelper 未通过 Authenticode 校验，拒绝启动: {helperPath}。如重新 publish 过，请重新运行 scripts/self-sign.ps1 -InstallTrust 签名。");
                     return null;
 #endif
                 }

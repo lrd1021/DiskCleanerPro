@@ -71,3 +71,47 @@ jobs:
             exit 1
           }
           Write-Host "Publish OK: no PDB, no net6.0 artifacts, Elevated helper self-contained"
+
+      - name: Sign binaries (Authenticode, GA gate)
+        # 仅当仓库配置了 CODESIGN_PFX_BASE64 secret 才实际签名；常规 push 无证书时跳过。
+        if: ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
+        shell: pwsh
+        env:
+          CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          CODESIGN_PASSWORD: ${{ secrets.CODESIGN_PASSWORD }}
+          CODESIGN_TIMESTAMP_URL: ${{ vars.CODESIGN_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
+          $pw = ConvertTo-SecureString $env:CODESIGN_PASSWORD -AsPlainText -Force
+          $cert = Get-PfxCertificate -FilePath $pfx -Password $pw
+          $ts = if ($env:CODESIGN_TIMESTAMP_URL) { $env:CODESIGN_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
+          foreach ($exe in @('./publish/DiskCleanerPro.exe', './publish/DiskCleaner.Elevated.exe')) {
+            Set-AuthenticodeSignature -FilePath $exe -Certificate $cert -TimestampServer $ts -HashAlgorithm SHA256
+            Write-Host "Signed: $exe"
+          }
+
+      - name: Verify Authenticode signing (GA gate)
+        # 分发前签名断言：常规 CI 未签名仅 warning；仓库设 vars.ENFORCE_SIGNING=true 时未签名即 fail。
+        shell: pwsh
+        env:
+          ENFORCE_SIGNING: ${{ vars.ENFORCE_SIGNING || 'false' }}
+        run: |
+          $fail = $false
+          foreach ($exe in @('./publish/DiskCleanerPro.exe', './publish/DiskCleaner.Elevated.exe')) {
+            $sig = Get-AuthenticodeSignature $exe
+            if ($sig.Status -ne 'Valid') {
+              Write-Warning "未签名 (GA 前置): $exe -> $($sig.Status)"
+              $fail = $true
+            } else {
+              Write-Host "Authenticode 有效: $exe"
+            }
+          }
+          if ($fail) {
+            if ($env:ENFORCE_SIGNING -eq 'true') {
+              Write-Error "ENFORCE_SIGNING=true 但 exe 未签名，GA 门禁失败。分发前须运行 scripts/sign-binaries.ps1"
+              exit 1
+            }
+            Write-Host "提示：分发前须运行 scripts/sign-binaries.ps1 完成 Authenticode 签名（GA 前置，常规 CI 不阻断）"
+          }

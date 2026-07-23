@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Security.Cryptography.X509Certificates;
 
 namespace DiskCleaner.Helpers
 {
@@ -135,11 +136,32 @@ namespace DiskCleaner.Helpers
         public static extern int WinVerifyTrust(
             IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid pgActionID, ref WINTRUST_DATA pWVTData);
 
-        /// <summary>校验 PE 文件是否含有受信任的有效 Authenticode 数字签名（result == 0 表示通过）</summary>
+        /// <summary>内置已知签名者指纹（发布 CA 证书时填入；自签场景留空，由 signing-thumbprint.txt / 环境变量提供）。</summary>
+        public static readonly string[] KnownSignerThumbprints = new string[0];
+
+        /// <summary>校验 PE 是否含受信任有效 Authenticode 签名，且签名者指纹命中预期集合（防伪造 helper，B3）。</summary>
         public static bool IsAuthenticodeSigned(string filePath)
         {
             if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return false;
 
+            // 1) 链可信：存在有效签名且可构建到受信任根
+            if (!VerifySignatureChain(filePath)) return false;
+
+            // 2) 钉死签名者指纹，防止"本机信任某根但非本应用证书"的伪造 helper
+            var expected = LoadExpectedSignerThumbprints();
+            if (expected.Count == 0)
+            {
+                // 未配置预期指纹：降级为仅链可信（GA 前应配置 CA 指纹），记录告警
+                Logger.Warning("IsAuthenticodeSigned: 未配置预期签名者指纹，已降级为仅链可信校验（建议配置 KnownSignerThumbprints 或 DISKCLEANER_EXPECTED_THUMBPRINTS）");
+                return true;
+            }
+            var tp = GetSignerThumbprint(filePath);
+            return tp != null && expected.Contains(tp);
+        }
+
+        /// <summary>仅校验签名链是否可信（WinVerifyTrust == 0），不涉及指纹。</summary>
+        private static bool VerifySignatureChain(string filePath)
+        {
             var fileInfo = new WINTRUST_FILE_INFO
             {
                 cbStruct = Marshal.SizeOf<WINTRUST_FILE_INFO>(),
@@ -175,6 +197,42 @@ namespace DiskCleaner.Helpers
                 if (trustData.pFile != IntPtr.Zero)
                     Marshal.FreeHGlobal(trustData.pFile);
             }
+        }
+
+        /// <summary>提取 PE 文件 Authenticode 签名者证书指纹（大写十六进制）；无签名/失败返回 null。</summary>
+        private static string GetSignerThumbprint(string filePath)
+        {
+            try
+            {
+                var cert = X509Certificate.CreateFromSignedFile(filePath);
+                using var x2 = new X509Certificate2(cert);
+                return x2.Thumbprint;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>加载预期签名者指纹集合：内置常量 ∪ 环境变量 DISKCLEANER_EXPECTED_THUMBPRINTS ∪ signing-thumbprint.txt（自签产物，gitignore）。</summary>
+        private static HashSet<string> LoadExpectedSignerThumbprints()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in KnownSignerThumbprints)
+                if (!string.IsNullOrWhiteSpace(t)) set.Add(t.Trim());
+            var env = Environment.GetEnvironmentVariable("DISKCLEANER_EXPECTED_THUMBPRINTS");
+            if (!string.IsNullOrWhiteSpace(env))
+                foreach (var t in env.Split(';'))
+                    if (!string.IsNullOrWhiteSpace(t)) set.Add(t.Trim());
+            try
+            {
+                var f = Path.Combine(AppContext.BaseDirectory, "signing-thumbprint.txt");
+                if (File.Exists(f))
+                    foreach (var line in File.ReadAllLines(f))
+                        if (!string.IsNullOrWhiteSpace(line)) set.Add(line.Trim());
+            }
+            catch { }
+            return set;
         }
 
         // ── 回收站辅助方法 ──

@@ -7,6 +7,14 @@ publish/
 publish-preview/
 publish-debug/
 
+# === 密钥 / 证书私钥（含私钥的 PFX、PEM 私钥等，严禁入库）===
+*.pfx
+*.p12
+*.key
+*.pvk
+*.pem
+signing-thumbprint.txt
+
 # === 工具/评审缓存 ===
 .gstack/
 
