@@ -244,7 +244,10 @@ namespace DiskCleaner.Services
             var opts = new EnumerationOptions
             {
                 IgnoreInaccessible = true,
-                AttributesToSkip = FileAttributes.ReparsePoint,
+                // 关键：保留 .NET 默认对 Hidden|System 的跳过（等价于原 Directory.GetFiles 默认行为，避免枚举大量隐藏/系统文件拖慢扫描），
+                // 叠加 ReparsePoint 跳过（防卡死，等价于原 File.GetAttributes 检查 junction 的逻辑）。
+                // 注意：不要只写 ReparsePoint，否则会覆盖掉默认的 Hidden|System 跳过，导致枚举量暴涨、扫描变慢。
+                AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System,
                 RecurseSubdirectories = false,
                 BufferSize = 4096
             };
