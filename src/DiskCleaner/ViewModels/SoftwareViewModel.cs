@@ -101,6 +101,7 @@ namespace DiskCleaner.ViewModels
             Progress = 0;
             _cts?.Dispose();
             _cts = new CancellationTokenSource();
+            CommandManager.InvalidateRequerySuggested();
 
             try
             {
@@ -118,6 +119,7 @@ namespace DiskCleaner.ViewModels
             {
                 IsLoading = false;
                 Progress = 100;
+                CommandManager.InvalidateRequerySuggested();
             }
         }
 

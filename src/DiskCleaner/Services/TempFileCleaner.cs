@@ -184,7 +184,7 @@ namespace DiskCleaner.Services
             return (totalFreed, totalDeleted);
         }
 
-        // 枚举得到的单个文件项（路径+大小由 FindFirstFile/FindNextFile 一次枚举直接给出，无需二次 stat）
+        // 枚举得到的单个文件项（路径+大小由 ForEachEntry 一次枚举直接给出，无需二次 stat）
         private readonly struct FileEntry
         {
             public FileEntry(string fullName, long size, bool isDirectory)
@@ -210,7 +210,7 @@ namespace DiskCleaner.Services
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    // 大小已由 FindFirstFile/FindNextFile 在枚举时直接给出，无需对每个文件再调一次 stat
+                    // 大小已由 ForEachEntry 在枚举时直接给出，无需对每个文件再调一次 stat
                     size += file.Size;
                     count++;
 
@@ -291,7 +291,11 @@ namespace DiskCleaner.Services
             if (permanent && ElevationHelper.IsProtectedPath(path))
             {
                 long size = 0;
-                try { size = GetDirectorySize(path, ct).size; } catch { }
+                try { size = GetDirectorySize(path, ct).size; }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    Logger.Warning($"临时文件清理无法统计受保护目录大小 [{path}]: {ex.Message}");
+                }
                 if (ElevationHelper.DeleteElevated(path))
                     return (size, 1);
                 return (0, 0);

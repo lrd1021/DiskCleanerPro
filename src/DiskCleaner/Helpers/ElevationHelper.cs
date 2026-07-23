@@ -123,10 +123,17 @@ namespace DiskCleaner.Helpers
                     return null;
                 }
 
-                // N2：完整性/签名校验。沙箱或调试环境通常无有效证书链，此时仅告警不阻断；
-                // 正式发版须对 helper 做 Authenticode 签名。
+                // N2：完整性/签名校验。Release 构建下签名失败直接阻断，防止 helper 被替换/篡改；
+                // 调试环境可在沙箱中无有效证书链，DEBUG 下仅告警不阻断。
                 if (!NativeMethods.IsAuthenticodeSigned(helperPath))
+                {
+#if DEBUG
                     Logger.Warning($"ElevatedHelper 未通过 Authenticode 校验（沙箱/调试环境常见）: {helperPath}");
+#else
+                    Logger.Error($"ElevatedHelper 未通过 Authenticode 校验，拒绝启动: {helperPath}");
+                    return null;
+#endif
+                }
 
                 return helperPath;
             }

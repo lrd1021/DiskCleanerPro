@@ -315,23 +315,5 @@ namespace DiskCleaner.Services
             // 委托给 Elevated helper 的权威实现，避免两份逻辑不一致（报告 #3）。
             return DiskCleaner.Elevated.Program.IsSafeMsiUninstall(msiArgs);
         }
-
-        private static bool IsGuid(string s)
-        {
-            return System.Text.RegularExpressions.Regex.IsMatch(
-                s ?? "", @"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
-        }
-
-        private static bool IsLocalMsiPath(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return false;
-            if (s.StartsWith("\\\\")) return false;
-            if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                s.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-                s.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase))
-                return false;
-            if (!s.EndsWith(".msi", StringComparison.OrdinalIgnoreCase)) return false;
-            return System.Text.RegularExpressions.Regex.IsMatch(s, @"^[A-Za-z]:\\");
-        }
     }
 }

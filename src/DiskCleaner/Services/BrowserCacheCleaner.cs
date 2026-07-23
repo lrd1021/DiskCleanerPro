@@ -259,16 +259,36 @@ namespace DiskCleaner.Services
             if (!Directory.Exists(path)) return (0, 0);
             long size = 0;
             int count = 0;
+            var stack = new Stack<string>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            stack.Push(path);
 
-            foreach (var file in SafeGetAllFiles(path))
+            while (stack.Count > 0)
             {
+                var current = stack.Pop();
+                if (!visited.Add(current)) continue;
                 ct.ThrowIfCancellationRequested();
+
                 try
                 {
-                    size += new FileInfo(file).Length;
-                    count++;
+                    NativeMethods.ForEachEntry(current, e =>
+                    {
+                        if (e.Name == "." || e.Name == "..") return;
+                        if (e.IsReparsePoint) return;           // 不跟随重解析点
+                        var full = Path.Combine(current, e.Name);
+                        if (e.IsDirectory)
+                        {
+                            if (visited.Contains(full)) return;
+                            stack.Push(full);
+                        }
+                        else
+                        {
+                            size += e.Size;
+                            count++;
+                        }
+                    }, ct);
                 }
-                catch { /* */ }
+                catch { /* 无权限 / 目录消失 */ }
             }
             return (size, count);
         }
@@ -276,35 +296,35 @@ namespace DiskCleaner.Services
         private IEnumerable<string> SafeGetAllFiles(string root)
         {
             var stack = new Stack<string>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             stack.Push(root);
             while (stack.Count > 0)
             {
                 var current = stack.Pop();
+                if (!visited.Add(current)) continue;
 
-                // 文件枚举结果先取出（yield 不能位于带 catch 的 try 内）
-                string[] files = null;
-                try { files = Directory.GetFiles(current); }
-                catch { /* 无权限 */ }
-                if (files != null)
-                {
-                    foreach (var f in files)
-                        yield return f;
-                }
-
-                // 子目录收集（跳过重解析点，避免误删其指向的目标目录）
-                // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
-                // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同其他模块修复）。
+                // 文件与子目录一次枚举完成（ForEachEntry 从枚举缓存取大小/属性，非阻塞）
+                var files = new List<string>();
                 try
                 {
                     NativeMethods.ForEachEntry(current, e =>
                     {
                         if (e.Name == "." || e.Name == "..") return;
-                        if (!e.IsDirectory) return;
                         if (e.IsReparsePoint) return;      // 不跟随重解析点
-                        stack.Push(Path.Combine(current, e.Name));
+                        var full = Path.Combine(current, e.Name);
+                        if (e.IsDirectory)
+                        {
+                            if (visited.Contains(full)) return;
+                            stack.Push(full);
+                        }
+                        else
+                        {
+                            files.Add(full);
+                        }
                     });
                 }
-                catch { /* 无权限 */ }
+                catch { /* 无权限 / 目录消失 */ }
+                foreach (var f in files) yield return f;
             }
         }
     }

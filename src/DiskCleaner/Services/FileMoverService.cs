@@ -30,6 +30,7 @@ namespace DiskCleaner.Services
             await Task.Run(() =>
             {
                 var stack = new Stack<string>();
+                var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 stack.Push(rootPath);
                 long scanned = 0;
 
@@ -37,53 +38,44 @@ namespace DiskCleaner.Services
                 {
                     ct.ThrowIfCancellationRequested();
                     var current = stack.Pop();
+                    if (!visited.Add(current)) continue;
 
                     try
                     {
-                        foreach (var file in Directory.GetFiles(current))
+                        // 用 ForEachEntry 一次枚举同时拿到文件路径与大小，避免 Directory.GetFiles + new FileInfo() 二次 stat
+                        NativeMethods.ForEachEntry(current, e =>
                         {
-                            ct.ThrowIfCancellationRequested();
-                            try
+                            if (e.Name == "." || e.Name == "..") return;
+                            if (e.IsReparsePoint) return;            // 不跟随重解析点
+                            var full = Path.Combine(current, e.Name);
+                            if (e.IsDirectory)
                             {
-                                var fi = new FileInfo(file);
-                                if (fi.Length >= minSize)
+                                if (e.Name.Equals("Windows", StringComparison.OrdinalIgnoreCase) ||
+                                    e.Name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase) ||
+                                    e.Name.StartsWith("Program Files", StringComparison.OrdinalIgnoreCase))
+                                    return;
+                                if (visited.Contains(full)) return;
+                                stack.Push(full);
+                            }
+                            else
+                            {
+                                if (e.Size >= minSize)
                                 {
                                     result.Add(new LargeFileInfo
                                     {
-                                        FilePath = fi.FullName,
-                                        FileName = fi.Name,
-                                        Directory = fi.DirectoryName,
-                                        SizeBytes = fi.Length,
-                                        LastModified = fi.LastWriteTime,
-                                        Extension = fi.Extension
+                                        FilePath = full,
+                                        FileName = e.Name,
+                                        Directory = current,
+                                        SizeBytes = e.Size,
+                                        LastModified = e.LastWriteTime,
+                                        Extension = Path.GetExtension(e.Name)
                                     });
                                 }
                                 scanned++;
                             }
-                            catch { /* */ }
-                        }
-                    }
-                    catch { /* */ }
-
-                    try
-                    {
-                        // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
-                        // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同 DiskAnalyzer/TempFileCleaner 修复）。
-                        var subDirs = new List<string>();
-                        NativeMethods.ForEachEntry(current, e =>
-                        {
-                            if (e.Name == "." || e.Name == "..") return;
-                            if (!e.IsDirectory) return;
-                            if (e.IsReparsePoint) return;            // 不跟随重解析点
-                            if (e.Name.Equals("Windows", StringComparison.OrdinalIgnoreCase) ||
-                                e.Name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase) ||
-                                e.Name.StartsWith("Program Files", StringComparison.OrdinalIgnoreCase))
-                                return;
-                            subDirs.Add(Path.Combine(current, e.Name));
                         }, ct);
-                        foreach (var dir in subDirs) stack.Push(dir);
                     }
-                    catch { /* */ }
+                    catch { /* 无权限 / 目录消失 */ }
 
                     if (scanned % 500 == 0)
                         OnProgress?.Invoke(-1, $"已扫描 {scanned} 个文件，找到 {result.Count} 个大文件");

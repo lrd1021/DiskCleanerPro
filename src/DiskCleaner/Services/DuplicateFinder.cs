@@ -50,12 +50,18 @@ namespace DiskCleaner.Services
                             try
                             {
                                 if (NativeMethods.TryGetFileMeta(file, out var meta) && meta.Length >= MinFileSize)
-                                allFiles.Add(meta);
+                                    allFiles.Add(meta);
                             }
-                            catch { }
+                            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                            {
+                                Logger.Warning($"重复文件扫描无法读取文件元数据 [{file}]: {ex.Message}");
+                            }
                         }
                     }
-                    catch { }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        Logger.Warning($"重复文件扫描无法枚举目录 [{current}]: {ex.Message}");
+                    }
 
                     try
                     {
@@ -72,7 +78,10 @@ namespace DiskCleaner.Services
                         }, ct);
                         foreach (var dir in subDirs) stack.Push(dir);
                     }
-                    catch { }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        Logger.Warning($"重复文件扫描无法枚举子目录 [{current}]: {ex.Message}");
+                    }
                 }
 
                 ReportProgress(20, $"共收集 {allFiles.Count} 个文件，开始分组...");
@@ -106,7 +115,10 @@ namespace DiskCleaner.Services
                             hashGroups[hash].Add(fi);
                         }
                         catch (OperationCanceledException) { throw; }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            Logger.Warning($"重复文件扫描无法计算哈希 [{fi.FullName}]: {ex.Message}");
+                        }
                     }
 
                     foreach (var kv in hashGroups.Where(g => g.Value.Count > 1))

@@ -285,10 +285,11 @@ namespace DiskCleaner.Helpers
             public bool IsDirectory;
             public bool IsReparsePoint;
             public long Size;
+            public DateTime LastWriteTime;
         }
 
         /// <summary>
-        /// 用 DirectoryInfo.EnumerateFileSystemInfos 枚举目录项，回调中提供名称、是否目录、是否重解析点、文件大小。
+        /// 用 DirectoryInfo.EnumerateFileSystemInfos 枚举目录项，回调中提供名称、是否目录、是否重解析点、文件大小、最后写入时间。
         /// 不跳过任何隐藏/系统文件，仅由调用方决定如何处理重解析点。失败时静默返回（不抛异常）。
         /// 取消令牌触发时抛出 OperationCanceledException（由调用方区分“用户取消”与“失败”）。
         /// </summary>
@@ -323,7 +324,8 @@ namespace DiskCleaner.Helpers
                         Name = fsi.Name,
                         IsDirectory = (attrs & FileAttributes.Directory) != 0,
                         IsReparsePoint = (attrs & FileAttributes.ReparsePoint) != 0,
-                        Size = size
+                        Size = size,
+                        LastWriteTime = fsi.LastWriteTime
                     });
                 }
             }

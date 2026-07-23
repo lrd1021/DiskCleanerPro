@@ -67,6 +67,20 @@ namespace DiskCleaner.Elevated
             var linkPath = args[1];
             var targetPath = args[2];
 
+            if (!IsLocalPath(linkPath) || !IsLocalPath(targetPath))
+            {
+                Console.Error.WriteLine("拒绝创建指向远程/URL 路径的符号链接");
+                Audit("symlink", $"{linkPath} -> {targetPath}", "blocked-remote", 1);
+                return 1;
+            }
+
+            if (IsProtectedRoot(linkPath))
+            {
+                Console.Error.WriteLine("拒绝在受保护根目录创建符号链接");
+                Audit("symlink", $"{linkPath} -> {targetPath}", "blocked-protected", 1);
+                return 1;
+            }
+
             if (File.Exists(linkPath) || Directory.Exists(linkPath))
             {
                 Console.Error.WriteLine("链接路径已存在");
