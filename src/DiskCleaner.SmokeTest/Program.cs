@@ -204,18 +204,10 @@ namespace DiskCleaner.SmokeTest
             Assert(!Invoke(@"C:\Users\someone\malware.exe"), "用户目录未签名程序应不可信");
             Assert(!Invoke(@"\\server\share\app.exe"), "UNC 路径应不可信");
 
-            // 受信任目录中的系统签名程序：依赖 Authenticode 校验；沙箱可能无证书链，故探测后判定
-            var sig = t.GetMethod("IsAuthenticodeSigned", BindingFlags.NonPublic | BindingFlags.Static);
-            bool cmdSigned = sig != null && (bool)sig.Invoke(null, new object[] { @"C:\Windows\System32\cmd.exe" });
-            if (cmdSigned)
-            {
-                Assert(Invoke(@"C:\Windows\System32\cmd.exe"), "系统签名程序应可信");
-                Console.WriteLine("        (可信卸载程序校验: cmd.exe 经 Authenticode 验证通过)");
-            }
-            else
-            {
-                Console.WriteLine("        (跳过: 沙箱无法执行 Authenticode 校验[无证书链]，受信任目录校验需在真机验证)");
-            }
+            // 解释器黑名单：cmd.exe 即便位于 Windows 目录且系统签名，也必须被拒绝
+            // （防止借 uninstall verb 以管理员执行 "cmd.exe /c del /q /s C:\Windows" 等任意命令）
+            Assert(!Invoke(@"C:\Windows\System32\cmd.exe"), "cmd.exe 属解释器，必须被解释器黑名单拒绝");
+            Console.WriteLine("        (解释器黑名单: cmd.exe / powershell.exe 等被拒绝)");
         }
 
         static void SoftwareManager_RejectUnsafeMsi()
@@ -258,6 +250,10 @@ namespace DiskCleaner.SmokeTest
             Assert(P(@"C:\Program Files (x86)"), "Program Files (x86) 应被识别");
             Assert(!P(@"C:\Users\me\junk"), "用户目录不应被误判为受保护根");
             Assert(!P(@"C:\Temp\junk"), "普通 C:\\Temp 不应被误判为受保护根");
+            // 可用性 P2：Windows 下的可清理临时目录不应被过度拦截，但 System32 等仍须拦截
+            Assert(!P(@"C:\Windows\Temp"), "Windows\\Temp 临时目录不应被误判为受保护根");
+            Assert(!P(@"C:\Windows\Temp\junk"), "Windows\\Temp 子目录不应被误判为受保护根");
+            Assert(P(@"C:\Windows\System32"), "Windows\\System32 仍应被识别为受保护根");
 
             // IsSafeMsiUninstall（提权卸载路径）：与 SoftwareManager 同源逻辑
             Assert(M("/X{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"), "应放行 /X{GUID}（单 token）");

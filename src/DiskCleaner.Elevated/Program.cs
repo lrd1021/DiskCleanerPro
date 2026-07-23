@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Collections.Generic;
 
 namespace DiskCleaner.Elevated
 {
@@ -311,10 +312,37 @@ namespace DiskCleaner.Elevated
                     var prefix = root + "\\" + p;
                     if (full.Equals(prefix, StringComparison.OrdinalIgnoreCase) ||
                         full.StartsWith(prefix + "\\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 例外：Windows 下的可清理临时目录（如 C:\Windows\Temp）不应被过度拦截，
+                        // 否则临时文件清理、软件管家等合法功能无法操作。仅放开明确安全的临时目录。
+                        if (p.Equals("Windows", StringComparison.OrdinalIgnoreCase) && IsAllowedUnderWindows(full, root))
+                            continue;
                         return true;
+                    }
                 }
             }
             catch { }
+            return false;
+        }
+
+        // Windows 下允许操作的子目录白名单（仅限已知安全的临时/缓存目录，递归生效）
+        private static readonly HashSet<string> AllowedUnderWindows = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Temp"
+        };
+
+        private static bool IsAllowedUnderWindows(string full, string root)
+        {
+            var winDir = root + "\\Windows";
+            if (!full.StartsWith(winDir + "\\", StringComparison.OrdinalIgnoreCase))
+                return false;
+            var rel = full.Substring(winDir.Length + 1).TrimEnd('\\');
+            foreach (var allowed in AllowedUnderWindows)
+            {
+                if (rel.Equals(allowed, StringComparison.OrdinalIgnoreCase) ||
+                    rel.StartsWith(allowed + "\\", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
             return false;
         }
 
@@ -368,6 +396,10 @@ namespace DiskCleaner.Elevated
             try { fullPath = Path.GetFullPath(path); }
             catch { return false; }
 
+            // 收紧：脚本宿主/Shell 解释器绝不可被当作"卸载器"以管理员启动，
+            // 否则可借 uninstall verb 执行 "cmd.exe /c del /q /s C:\Windows" 等任意命令
+            if (IsInterpreter(Path.GetFileName(fullPath))) return false;
+
             var dir = Path.GetDirectoryName(fullPath) ?? "";
             var trustedRoots = new[]
             {
@@ -382,6 +414,20 @@ namespace DiskCleaner.Elevated
             if (!inTrusted) return false;
 
             return IsAuthenticodeSigned(fullPath);
+        }
+
+        // 脚本宿主 / Shell 解释器黑名单：绝不允许 uninstall verb 以管理员身份启动它们
+        private static readonly HashSet<string> InterpreterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "cmd.exe", "powershell.exe", "pwsh.exe",
+            "wscript.exe", "cscript.exe", "bash.exe", "sh",
+            "mshta.exe", "rundll32.exe", "regsvr32.exe", "certutil.exe"
+        };
+
+        private static bool IsInterpreter(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName)) return false;
+            return InterpreterNames.Contains(fileName);
         }
 
         internal static bool IsSafeMsiUninstall(string msiArgs)
