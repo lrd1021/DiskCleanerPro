@@ -107,11 +107,15 @@ namespace DiskCleaner.Services
                     }
                     else
                     {
+                        // 单个目标单独加超时，避免某个目录（如指向离线/网络位置的失效 junction）阻塞导致整轮扫描卡死
+                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        linked.CancelAfter(TimeSpan.FromSeconds(120));
                         long totalSize = 0;
                         int totalFiles = 0;
                         foreach (var path in target.Paths)
                         {
-                            var (size, count) = await Task.Run(() => GetDirectorySize(path, ct), ct);
+                            var (size, count) = await Task.Run(
+                                () => GetDirectorySize(path, linked.Token, target.Name, i, total), linked.Token);
                             totalSize += size;
                             totalFiles += count;
                         }
@@ -119,6 +123,12 @@ namespace DiskCleaner.Services
                         target.FileCount = totalFiles;
                         target.Status = $"共 {totalFiles} 个文件";
                     }
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // 超时触发的取消——跳过该目标，不中断整轮扫描
+                    target.Status = "扫描超时，已跳过";
+                    Logger.Warning($"临时文件扫描超时（>120s），已跳过目标：{target.Name}");
                 }
                 catch (OperationCanceledException)
                 {
@@ -179,15 +189,17 @@ namespace DiskCleaner.Services
             return (totalFreed, totalDeleted);
         }
 
-        private (long size, int count) GetDirectorySize(string path, CancellationToken ct)
+        private (long size, int count) GetDirectorySize(string path, CancellationToken ct,
+            string targetName = null, int targetIndex = 0, int targetTotal = 1)
         {
             long size = 0;
             int count = 0;
             if (!Directory.Exists(path)) return (0, 0);
 
+            int scanned = 0;
             try
             {
-                foreach (var file in EnumerateFilesSafe(path))
+                foreach (var file in EnumerateFilesSafe(path, ct))
                 {
                     ct.ThrowIfCancellationRequested();
                     try
@@ -197,6 +209,11 @@ namespace DiskCleaner.Services
                     }
                     catch (IOException) { }
                     catch (UnauthorizedAccessException) { }
+
+                    // 增量进度：每 512 个文件上报一次，让进度文本实时滚动
+                    // pct=-1 表示仅更新文本、不推进总进度条（避免在大目录扫描时进度条长时间冻结）
+                    if (targetName != null && ((++scanned) & 0x1FF) == 0)
+                        OnProgress?.Invoke(-1, $"扫描 {targetName}：已扫描 {count} 个文件");
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -206,39 +223,50 @@ namespace DiskCleaner.Services
             return (size, count);
         }
 
-        private IEnumerable<string> EnumerateFilesSafe(string path)
+        private IEnumerable<string> EnumerateFilesSafe(string path, CancellationToken ct)
         {
+            // 关键修复：用 EnumerationOptions 让操作系统在枚举层面直接跳过重解析点（junction/符号链接），
+            // 避免对每个子目录调用 File.GetAttributes —— 该调用在指向离线/网络位置的失效重解析点上可能阻塞（SMB 超时可达数分钟），
+            // 正是导致"扫描卡死"的根因。改用原生跳过后既安全又不会卡。
+            var opts = new EnumerationOptions
+            {
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+                RecurseSubdirectories = false,
+                BufferSize = 4096
+            };
+
             var stack = new Stack<string>();
             stack.Push(path);
 
             while (stack.Count > 0)
             {
+                ct.ThrowIfCancellationRequested();
                 var current = stack.Pop();
-                string[] files = null, dirs = null;
+                IEnumerable<string> files = null, dirs = null;
 
-                try { files = Directory.GetFiles(current); }
+                try { files = Directory.EnumerateFiles(current, "*", opts); }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
+                catch (Exception) { }
 
                 if (files != null)
-                    foreach (var f in files) yield return f;
+                    foreach (var f in files)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        yield return f;
+                    }
 
-                try { dirs = Directory.GetDirectories(current); }
+                try { dirs = Directory.EnumerateDirectories(current, "*", opts); }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
+                catch (Exception) { }
 
                 if (dirs != null)
                     foreach (var d in dirs)
                     {
-                        // 不跟随交接点/符号链接，避免枚举并删除其指向的目标
-                        // （管理员权限下可能被 junction 指向系统目录，造成不可逆删除）
-                        try
-                        {
-                            if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
-                                continue;
-                        }
-                        catch (IOException) { continue; }
-                        catch (UnauthorizedAccessException) { continue; }
+                        // 重解析点已被 AttributesToSkip 在枚举层过滤，这里无需再调用 File.GetAttributes
+                        ct.ThrowIfCancellationRequested();
                         stack.Push(d);
                     }
             }
@@ -260,7 +288,7 @@ namespace DiskCleaner.Services
                 return (0, 0);
             }
 
-            foreach (var file in EnumerateFilesSafe(path))
+            foreach (var file in EnumerateFilesSafe(path, ct))
             {
                 ct.ThrowIfCancellationRequested();
                 try
