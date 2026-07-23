@@ -231,9 +231,8 @@ namespace DiskCleaner.Services
 
         private IEnumerable<FileEntry> EnumerateFilesSafe(string path, CancellationToken ct)
         {
-            // 用 FindFirstFile/FindNextFile 原生枚举：每个文件仅一次系统调用即可同时拿到路径与大小，
-            // 相比 Directory.EnumerateFiles + 逐个 GetFileAttributesEx 减少一半系统调用，大目录扫描速度显著提升。
-            // 不跳过任何隐藏/系统文件（用户要求完整扫描）；仅不跟随重解析点（junction/符号链接），
+            // 用托管 DirectoryInfo.EnumerateFileSystemInfos 枚举：名称可靠、非阻塞，文件大小从枚举缓存读取，
+            // 避免对每文件再调 GetFileAttributesEx；不跳过任何隐藏/系统文件（用户要求完整扫描）；仅不跟随重解析点（junction/符号链接），
             // 避免误入被指向的系统目录或在其上阻塞（等价于原 File.GetAttributes 检查 junction 的安全性）。
             // 防环：同一目录只压栈一次（大小写不敏感）。目录树若出现循环链接（symlink/junction 指回祖先），
             // 没有此集合会无限重复遍历、文件计数暴涨到数亿且永不结束——这正是"扫了几亿文件仍不结束"的根因。

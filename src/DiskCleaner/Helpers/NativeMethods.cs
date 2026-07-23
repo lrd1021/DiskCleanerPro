@@ -266,39 +266,18 @@ namespace DiskCleaner.Helpers
             return true;
         }
 
-        // ── 快速目录枚举（FindFirstFile/FindNextFile，枚举即取大小）──
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        internal struct WIN32_FIND_DATA
-        {
-            public FileAttributes dwFileAttributes;
-            public FILETIME ftCreationTime;
-            public FILETIME ftLastAccessTime;
-            public FILETIME ftLastWriteTime;
-            public uint nFileSizeHigh;
-            public uint nFileSizeLow;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string cFileName;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)]
-            public string cAlternateFileName;
-        }
-
-        public static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        internal static extern IntPtr FindFirstFileW(string lpFileName, out WIN32_FIND_DATA lpFindFileData);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool FindNextFileW(IntPtr hFindFile, out WIN32_FIND_DATA lpFindFileData);
-
-        [DllImport("kernel32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool FindClose(IntPtr hFindFile);
+        // ── 快速目录枚举 ──
+        // 用托管 DirectoryInfo.EnumerateFileSystemInfos 枚举目录项。
+        // 为什么不再用 FindFirstFileW/FindNextFileW：
+        //   WIN32_FIND_DATA.cFileName（ByValTStr 内联缓冲）在本环境（out-struct 下）无法可靠 marshal，
+        //   文件名回传始终为空字符串，导致：磁盘分析大小严重偏小、临时文件清理构建出空路径（静默漏删/误删）。
+        // 托管枚举在本环境名称正确、非阻塞，且 Attributes 直接含 ReparsePoint 标记，可安全跳过 junction/符号链接，
+        // 避免对失效/离线 junction（如指向断网共享）调用 File.GetAttributes 时阻塞（同临时文件扫描修复）。
+        // 文件大小从枚举缓存的 WIN32_FILE_ATTRIBUTE_DATA 直接读取（FileInfo.Length 不二次 stat）。
+        // 不跟随重解析点；调用方负责 visited 防循环链接。
 
         /// <summary>
-        /// 目录项（FindFirstFile/FindNextFile 在枚举时即可直接拿到文件大小，无需对每文件再调一次 stat，
-        /// 相比 Directory.EnumerateFiles + GetFileAttributesEx 减少一半系统调用，显著提升大目录扫描速度）。
+        /// 目录项（托管枚举，名称可靠、非阻塞）。
         /// </summary>
         public struct FindEntry
         {
@@ -309,33 +288,49 @@ namespace DiskCleaner.Helpers
         }
 
         /// <summary>
-        /// 用 FindFirstFileW/FindNextFileW 原生枚举目录项，回调中直接提供文件大小（无需二次 stat）。
-        /// 不跳过任何隐藏/系统文件，仅由调用方决定如何处理重解析点。
+        /// 用 DirectoryInfo.EnumerateFileSystemInfos 枚举目录项，回调中提供名称、是否目录、是否重解析点、文件大小。
+        /// 不跳过任何隐藏/系统文件，仅由调用方决定如何处理重解析点。失败时静默返回（不抛异常）。
+        /// 取消令牌触发时抛出 OperationCanceledException（由调用方区分“用户取消”与“失败”）。
         /// </summary>
         internal static void ForEachEntry(string directory, Action<FindEntry> action, CancellationToken ct = default)
         {
-            var data = new WIN32_FIND_DATA();
-            IntPtr h = FindFirstFileW(Path.Combine(directory, "*"), out data);
-            if (h == INVALID_HANDLE_VALUE) return;
+            if (string.IsNullOrEmpty(directory)) return;
+
+            IEnumerable<FileSystemInfo> entries;
             try
             {
-                do
+                entries = new DirectoryInfo(directory).EnumerateFileSystemInfos();
+            }
+            catch (DirectoryNotFoundException) { return; }
+            catch (IOException) { return; }
+            catch (UnauthorizedAccessException) { return; }
+            catch (ArgumentException) { return; }
+
+            try
+            {
+                foreach (var fsi in entries)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var attrs = data.dwFileAttributes;
+                    var attrs = fsi.Attributes;
+                    long size = 0;
+                    if ((attrs & FileAttributes.Directory) == 0 && fsi is FileInfo fi)
+                    {
+                        try { size = fi.Length; }
+                        catch { size = 0; }
+                    }
                     action(new FindEntry
                     {
-                        Name = data.cFileName,
+                        Name = fsi.Name,
                         IsDirectory = (attrs & FileAttributes.Directory) != 0,
                         IsReparsePoint = (attrs & FileAttributes.ReparsePoint) != 0,
-                        Size = ((long)data.nFileSizeHigh << 32) | data.nFileSizeLow
+                        Size = size
                     });
-                } while (FindNextFileW(h, out data));
+                }
             }
-            finally
-            {
-                FindClose(h);
-            }
+            catch (OperationCanceledException) { throw; }
+            catch (DirectoryNotFoundException) { }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 }

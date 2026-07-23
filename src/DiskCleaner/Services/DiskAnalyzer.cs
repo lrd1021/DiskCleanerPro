@@ -28,7 +28,8 @@ namespace DiskCleaner.Services
         {
             OnProgress?.Invoke(0, $"正在分析 {rootPath}...");
 
-            var rootNode = await Task.Run(() => BuildNode(rootPath, true, rootPath, ct), ct);
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var rootNode = await Task.Run(() => BuildNode(rootPath, true, rootPath, ct, visited), ct);
 
             // 计算百分比
             CalculatePercentages(rootNode);
@@ -53,7 +54,7 @@ namespace DiskCleaner.Services
                 ct.ThrowIfCancellationRequested();
                 OnProgress?.Invoke((int)((float)done / Math.Max(total, 1) * 100), $"扫描：{dir}");
 
-                var node = await Task.Run(() => BuildNode(dir, true, dir, ct), ct);
+                var node = await Task.Run(() => BuildNode(dir, true, dir, ct, new HashSet<string>(StringComparer.OrdinalIgnoreCase)), ct);
                 result.Add(node);
                 done++;
             }
@@ -78,8 +79,11 @@ namespace DiskCleaner.Services
         /// - 用显式栈替代递归，避免深目录（如 node_modules）爆栈（R7）
         /// - 子节点先收集到普通 List，最后一次性赋给 ObservableCollection，避免构建期频繁 CollectionChanged 通知风暴（R11）
         /// - 树完全构建完成、返回 UI 线程后才被绑定，杜绝后台线程修改 OC 引发的竞态崩溃（R9）
+        /// - 用托管 DirectoryInfo.EnumerateFileSystemInfos 枚举（名称可靠、非阻塞，文件大小从枚举缓存读取），避免对子目录
+        ///   调用 File.GetAttributes 在失效/离线 junction（如指向断网共享）上阻塞导致"卡死"（同临时文件扫描修复）。
+        /// - 不跟随重解析点（junction/符号链接）；visited 集合兜底防循环链接，杜绝无限遍历（同临时文件扫描修复）。
         /// </summary>
-        private FileNode BuildNode(string path, bool isDir, string rootPath, CancellationToken ct)
+        private FileNode BuildNode(string path, bool isDir, string rootPath, CancellationToken ct, HashSet<string> visited)
         {
             var rootFrame = new BuildFrame { Node = CreateNode(path, isDir), RootPath = rootPath };
             var stack = new Stack<BuildFrame>();
@@ -98,44 +102,45 @@ namespace DiskCleaner.Services
 
                     if (frame.Node.IsDirectory)
                     {
-                        // 先枚举文件
+                        var dirPath = frame.Node.FullPath;
                         try
                         {
-                        foreach (var file in Directory.GetFiles(frame.Node.FullPath))
-                        {
-                            try
+                            NativeMethods.ForEachEntry(dirPath, e =>
                             {
-                                if (NativeMethods.TryGetFileMeta(file, out var meta))
+                                ct.ThrowIfCancellationRequested();
+                                if (e.Name == "." || e.Name == "..") return;
+                                if (e.IsReparsePoint) return;            // 不跟随重解析点（安全，且避免指向系统目录/断网共享时阻塞）
+                                if (e.IsDirectory)
                                 {
-                                    frame.FileSizeSum += meta.Length;
-                                    frame.Children.Add(CreateLeafNode(meta));
+                                    var full = Path.Combine(dirPath, e.Name);
+                                    if (SkipDirs.Contains(e.Name)) return;   // 跳过系统保护目录
+                                    if (!visited.Add(full))                    // 防循环链接兜底
+                                    {
+                                        Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{full}");
+                                        return;
+                                    }
+                                    frame.SubDirs.Add(full);
+                                }
+                                else
+                                {
+                                    frame.FileSizeSum += e.Size;
+                                    frame.Children.Add(new FileNode
+                                    {
+                                        Name = e.Name,
+                                        FullPath = Path.Combine(dirPath, e.Name),
+                                        IsDirectory = false,
+                                        SizeBytes = e.Size,
+                                        Extension = Path.GetExtension(e.Name)
+                                    });
                                     totalFiles++;
                                     if (totalFiles % 5000 == 0)
                                         OnProgress?.Invoke(-1, $"正在扫描 {frame.Node.Name}... ({FileSizeFormatter.Format(frame.FileSizeSum)})");
                                 }
-                            }
-                            catch { /* 跳过无权限文件 */ }
+                            }, ct);
                         }
-                        }
-                        catch { /* 目录无权限 */ }
-
-                        // 再收集子目录（跳过系统保护目录与交接点/符号链接）
-                        try
-                        {
-                            foreach (var dir in Directory.GetDirectories(frame.Node.FullPath))
-                            {
-                                var dirName = Path.GetFileName(dir);
-                                if (SkipDirs.Contains(dirName)) continue;
-                                try
-                                {
-                                    if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0)
-                                        continue;
-                                }
-                                catch { continue; }
-                                frame.SubDirs.Add(dir);
-                            }
-                        }
-                        catch { /* 目录无权限 */ }
+                        catch (OperationCanceledException) { throw; }
+                        catch (IOException) { /* 目录无权限 */ }
+                        catch (UnauthorizedAccessException) { /* 目录无权限 */ }
                     }
 
                 }
@@ -181,19 +186,6 @@ namespace DiskCleaner.Services
             };
         }
 
-        private static FileNode CreateLeafNode(FileMeta meta)
-        {
-            return new FileNode
-            {
-                Name = meta.Name,
-                FullPath = meta.FullName,
-                IsDirectory = false,
-                SizeBytes = meta.Length,
-                Extension = meta.Extension,
-                LastModified = meta.LastModified
-            };
-        }
-
         private static void AttachChild(BuildFrame parent, FileNode childNode)
         {
             parent.Children.Add(childNode);
@@ -227,13 +219,14 @@ namespace DiskCleaner.Services
             var result = new List<string>();
             try
             {
-                var dirs = Directory.GetDirectories(path);
-                foreach (var d in dirs)
+                NativeMethods.ForEachEntry(path, e =>
                 {
-                    var name = Path.GetFileName(d);
-                    if (SkipDirs.Contains(name)) continue;
-                    result.Add(d);
-                }
+                    if (e.Name == "." || e.Name == "..") return;
+                    if (!e.IsDirectory) return;
+                    if (e.IsReparsePoint) return;        // 不扫描指向别处的 junction/符号链接（避免重复统计 C:\Users 等）
+                    if (SkipDirs.Contains(e.Name)) return;
+                    result.Add(Path.Combine(path, e.Name));
+                });
             }
             catch { /* 无权限 */ }
             return result;
@@ -247,13 +240,16 @@ namespace DiskCleaner.Services
 
         /// <summary>
         /// 快速获取目录大小（不构建完整树，用于性能优化场景）
+        /// 同样用原生枚举 + 不跟随重解析点 + visited 防循环，避免卡死与无限遍历。
         /// </summary>
         public long GetDirectorySizeFast(string path, CancellationToken ct = default)
         {
             if (!Directory.Exists(path)) return 0;
             long size = 0;
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var stack = new Stack<string>();
             stack.Push(path);
+            visited.Add(path);
 
             while (stack.Count > 0)
             {
@@ -262,21 +258,27 @@ namespace DiskCleaner.Services
 
                 try
                 {
-                    foreach (var file in Directory.GetFiles(current))
+                    NativeMethods.ForEachEntry(current, e =>
                     {
                         ct.ThrowIfCancellationRequested();
-                        try { if (NativeMethods.TryGetFileMeta(file, out var meta)) size += meta.Length; }
-                        catch { /* 跳过 */ }
-                    }
+                        if (e.Name == "." || e.Name == "..") return;
+                        if (e.IsReparsePoint) return;
+                        if (e.IsDirectory)
+                        {
+                            var full = Path.Combine(current, e.Name);
+                            if (SkipDirs.Contains(e.Name)) return;
+                            if (!visited.Add(full)) return;   // 防循环链接兜底
+                            stack.Push(full);
+                        }
+                        else
+                        {
+                            size += e.Size;
+                        }
+                    }, ct);
                 }
-                catch { /* 无权限 */ }
-
-                try
-                {
-                    foreach (var dir in Directory.GetDirectories(current))
-                        stack.Push(dir);
-                }
-                catch { /* 无权限 */ }
+                catch (OperationCanceledException) { throw; }
+                catch (IOException) { /* 无权限 */ }
+                catch (UnauthorizedAccessException) { /* 无权限 */ }
             }
 
             return size;

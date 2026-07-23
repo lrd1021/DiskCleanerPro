@@ -90,6 +90,9 @@ namespace DiskCleaner.ViewModels
         private async Task AnalyzeAsync()
         {
             IsAnalyzing = true;
+            // 立即让“开始分析”按钮进入禁用态（RelayCommand 依赖 CommandManager.RequerySuggested，
+            // 仅属性变化不会自动刷新按钮可用性，需主动触发一次全局重查）
+            System.Windows.Input.CommandManager.InvalidateRequerySuggested();
             Progress = 0;
             ProgressText = "正在分析 C 盘...";
             _cts?.Dispose();
@@ -108,7 +111,10 @@ namespace DiskCleaner.ViewModels
                 }
                 ProgressText = $"分析完成，C盘根目录共占用 {TotalSizeDisplay}";
             }
-            catch (System.OperationCanceledException) { /* 用户取消 — 正常流程 */ }
+            catch (System.OperationCanceledException)
+            {
+                ProgressText = "已取消分析";   // 用户取消 — 正常流程
+            }
             catch (System.Exception ex)
             {
                 ProgressText = $"分析失败：{ex.Message}";
@@ -117,6 +123,9 @@ namespace DiskCleaner.ViewModels
             {
                 IsAnalyzing = false;
                 Progress = 100;
+                // 关键：扫描结束后（无论成功/失败/取消）主动刷新命令可用性，
+                // 否则“开始分析”按钮要等用户点击/移动鼠标触发 RequerySuggested 才会恢复可点击
+                System.Windows.Input.CommandManager.InvalidateRequerySuggested();
             }
         }
 
