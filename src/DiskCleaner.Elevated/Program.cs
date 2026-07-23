@@ -321,7 +321,12 @@ namespace DiskCleaner.Elevated
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // fail-closed：路径解析异常时保守视为受保护，拒绝操作（防止敌手利用异常绕过守卫）
+                Console.Error.WriteLine($"IsProtectedRoot 解析异常，按受保护处理: {ex.Message}");
+                return true;
+            }
             return false;
         }
 

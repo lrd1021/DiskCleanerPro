@@ -38,7 +38,11 @@ namespace DiskCleaner.Services
                 {
                     ct.ThrowIfCancellationRequested();
                     var current = stack.Pop();
-                    if (!visited.Add(current)) continue;
+                    if (!visited.Add(current))
+                    {
+                        Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{current}");
+                        continue;
+                    }
 
                     try
                     {
@@ -54,7 +58,11 @@ namespace DiskCleaner.Services
                                     e.Name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase) ||
                                     e.Name.StartsWith("Program Files", StringComparison.OrdinalIgnoreCase))
                                     return;
-                                if (visited.Contains(full)) return;
+                                if (!visited.Add(full))
+                                {
+                                    Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{full}");
+                                    return;
+                                }
                                 stack.Push(full);
                             }
                             else

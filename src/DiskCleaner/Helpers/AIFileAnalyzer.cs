@@ -211,7 +211,8 @@ namespace DiskCleaner.Helpers
                     if (first.TryGetProperty("text", out var t)) return t.GetString();
                 }
             }
-            catch { }
+            // 兜底：字段形状不匹配（如某些厂商返回的 JSON 结构不同）时静默继续尝试其他字段
+            catch (System.Text.Json.JsonException) { }
             if (root.TryGetProperty("result", out var r)) return r.GetString();   // 文心
             if (root.TryGetProperty("output", out var o)) return o.GetString();
             if (root.TryGetProperty("response", out var resp)) return resp.GetString();

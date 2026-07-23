@@ -25,7 +25,7 @@ jobs:
         run: dotnet restore DiskCleanerPro.sln
 
       - name: Build (Release)
-        run: dotnet build DiskCleanerPro.sln -c Release --no-restore
+        run: dotnet build DiskCleanerPro.sln -c Release --no-restore -p:TreatWarningsAsErrors=true
 
       - name: Smoke test (headless)
         # 冒烟测试是控制台程序，Environment.Exit(0/1) 直接决定 CI 成败
@@ -54,8 +54,20 @@ jobs:
             Write-Error "DiskCleaner.Elevated.exe missing from publish output"
             exit 1
           }
-          if (-not (Test-Path ./publish/coreclr.dll)) {
+          $coreclr = Get-ChildItem ./publish -Recurse -Filter "coreclr.dll"
+          if (-not $coreclr) {
             Write-Error "coreclr.dll missing - Elevated helper is NOT self-contained"
+            exit 1
+          }
+          # 二次校验：runtimeconfig 中不应出现 framework 依赖（应为 includedFrameworks）
+          $rtcfg = "./publish/DiskCleaner.Elevated.runtimeconfig.json"
+          if (-not (Test-Path $rtcfg)) {
+            Write-Error "DiskCleaner.Elevated.runtimeconfig.json missing from publish output"
+            exit 1
+          }
+          $json = Get-Content $rtcfg -Raw | ConvertFrom-Json
+          if ($json.runtimeOptions.framework) {
+            Write-Error "Elevated helper runtimeconfig shows framework dependency (not self-contained)"
             exit 1
           }
           Write-Host "Publish OK: no PDB, no net6.0 artifacts, Elevated helper self-contained"

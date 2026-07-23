@@ -274,7 +274,11 @@ namespace DiskCleaner.Services
             while (stack.Count > 0)
             {
                 var current = stack.Pop();
-                if (!visited.Add(current)) continue;
+                if (!visited.Add(current))
+                {
+                    Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{current}");
+                    continue;
+                }
                 ct.ThrowIfCancellationRequested();
 
                 try
@@ -286,7 +290,11 @@ namespace DiskCleaner.Services
                         var full = Path.Combine(current, e.Name);
                         if (e.IsDirectory)
                         {
-                            if (visited.Contains(full)) return;
+                            if (!visited.Add(full))
+                            {
+                                Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{full}");
+                                return;
+                            }
                             stack.Push(full);
                         }
                         else
@@ -310,7 +318,11 @@ namespace DiskCleaner.Services
             while (stack.Count > 0)
             {
                 var current = stack.Pop();
-                if (!visited.Add(current)) continue;
+                if (!visited.Add(current))
+                {
+                    Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{current}");
+                    continue;
+                }
 
                 // 文件与子目录一次枚举完成（ForEachEntry 从枚举缓存取大小/属性，非阻塞）
                 var files = new List<string>();
@@ -323,7 +335,11 @@ namespace DiskCleaner.Services
                         var full = Path.Combine(current, e.Name);
                         if (e.IsDirectory)
                         {
-                            if (visited.Contains(full)) return;
+                            if (!visited.Add(full))
+                            {
+                                Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{full}");
+                                return;
+                            }
                             stack.Push(full);
                         }
                         else

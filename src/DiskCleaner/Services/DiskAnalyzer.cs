@@ -228,14 +228,30 @@ namespace DiskCleaner.Services
                     result.Add(Path.Combine(path, e.Name));
                 });
             }
-            catch { /* 无权限 */ }
+            catch (IOException ex)
+            {
+                Logger.Warning($"枚举目录失败 [{path}]: {ex.Message}");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Logger.Warning($"无权限访问目录 [{path}]: {ex.Message}");
+            }
             return result;
         }
 
         private string SafeGetLastModified(string path)
         {
             try { return Directory.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm"); }
-            catch { return ""; }
+            catch (IOException ex)
+            {
+                Logger.Warning($"获取目录最后修改时间失败 [{path}]: {ex.Message}");
+                return "";
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Logger.Warning($"无权限获取目录最后修改时间 [{path}]: {ex.Message}");
+                return "";
+            }
         }
 
         /// <summary>
