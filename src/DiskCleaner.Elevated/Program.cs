@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -38,6 +39,7 @@ namespace DiskCleaner.Elevated
                     "symlink" => Symlink(args),
                     "delete" => Delete(args),
                     "uninstall" => Uninstall(args),
+                    "verifyaudit" => VerifyAudit(args),
                     _ => UnknownCommand()
                 };
             }
@@ -162,12 +164,20 @@ namespace DiskCleaner.Elevated
                 else
                 {
                     try { File.Delete(fsi.FullName); }
-                    catch { /* 继续删除其余 */ }
+                    catch (Exception ex)
+                    {
+                        // 删除失败不静默：记录审计，但继续删除其余文件，尽力而为（R5）
+                        Audit("delete-file", fsi.FullName, "fail: " + ex.GetType().Name, Marshal.GetLastWin32Error());
+                    }
                 }
             }
 
             try { Directory.Delete(path, false); }
-            catch { /* 可能目录非空 */ }
+            catch (Exception ex)
+            {
+                // 目录非空（通常为前述文件删除失败所致）：记录审计，不抛异常（R5）
+                Audit("delete-dir", path, "fail: " + ex.GetType().Name, Marshal.GetLastWin32Error());
+            }
         }
 
         /// <summary>
@@ -417,7 +427,9 @@ namespace DiskCleaner.Elevated
             finally { LocalFree(ptr); }
         }
 
-                // ── 审计日志（N1） ──
+                // ── 审计日志（N1） + #13 哈希链完整性 ──
+        private static readonly object _auditLock = new object();
+
         private static void Audit(string op, string detail, string result, int code)
         {
             try
@@ -426,14 +438,109 @@ namespace DiskCleaner.Elevated
                 Directory.CreateDirectory(dir);
                 var file = Path.Combine(dir, "elevated-" + DateTime.Now.ToString("yyyyMMdd") + ".log");
                 var q = (char)0x22;
-                var line = "{" + q + "ts" + q + ":" + q
-                         + DateTime.Now.ToString("O") + q + "," + q + "op" + q + ":" + q
-                         + EscapeJson(op) + q + "," + q + "detail" + q + ":" + q
-                         + EscapeJson(detail) + q + "," + q + "result" + q + ":" + q
-                         + EscapeJson(result) + q + "," + q + "code" + q + ":" + code + "}" + Environment.NewLine;
-                File.AppendAllText(file, line);
+                var body = q + "ts" + q + ":" + q + DateTime.Now.ToString("O") + q + ","
+                         + q + "op" + q + ":" + q + EscapeJson(op) + q + ","
+                         + q + "detail" + q + ":" + q + EscapeJson(detail) + q + ","
+                         + q + "result" + q + ":" + q + EscapeJson(result) + q + ","
+                         + q + "code" + q + ":" + code;
+                var canonical = "{" + body + "}";
+
+                // #13：哈希链 —— 每行携带前一行的 SHA256，任何篡改均可被 verifyaudit 检测
+                string prevHash;
+                try
+                {
+                    var last = File.ReadLines(file).LastOrDefault();
+                    prevHash = (last != null && TryExtractHash(last, out var h)) ? h : "";
+                }
+                catch { prevHash = ""; }
+
+                var hash = ComputeChainHash(prevHash, canonical);
+                var fullLine = "{" + body + "," + q + "_h" + q + ":" + q + hash + q + "}" + Environment.NewLine;
+
+                lock (_auditLock)
+                {
+                    File.AppendAllText(file, fullLine);
+                }
             }
             catch { }
+        }
+
+        private static bool TryExtractHash(string line, out string hash)
+        {
+            hash = null;
+            var m = Regex.Match(line, "\"_h\"\\s*:\\s*\"([0-9a-fA-F]{64})\"");
+            if (m.Success) { hash = m.Groups[1].Value; return true; }
+            return false;
+        }
+
+        private static string ComputeChainHash(string prevHash, string canonical)
+        {
+            using var sha = SHA256.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(prevHash + canonical));
+            var sb = new StringBuilder(bytes.Length * 2);
+            foreach (var b in bytes) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+
+        // #13 验证：重算哈希链，返回是否完整；firstBrokenLine 为首个不匹配行号（从 1 起，-1 表示完整）。
+        // 无 _h 字段的遗留行（升级前日志）跳过校验，兼容过渡期。供真机 R16 #13 点验。
+        internal static bool VerifyAuditLog(string file, out int firstBrokenLine)
+        {
+            firstBrokenLine = -1;
+            if (!File.Exists(file)) return true;
+            string prev = "";
+            int idx = 0;
+            foreach (var line in File.ReadLines(file))
+            {
+                idx++;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (!TryExtractHash(line, out var h)) continue;   // 遗留行跳过
+                var canonical = StripHashField(line);
+                var expected = ComputeChainHash(prev, canonical);
+                if (!expected.Equals(h, StringComparison.OrdinalIgnoreCase))
+                {
+                    firstBrokenLine = idx;
+                    return false;
+                }
+                prev = h;
+            }
+            return true;
+        }
+
+        private static string StripHashField(string line)
+        {
+            // line = {... ,"_h":"<64hex>"}；去掉末尾的 ,"_h":"..." 段，复原写入时的 canonical。
+            // 用字符串定位（而非正则）以规避边界匹配歧义。
+            const string marker = ",\"_h\":";
+            int idx = line.LastIndexOf(marker);
+            if (idx < 0) return line;
+            return line.Substring(0, idx) + "}";
+        }
+
+        private static int VerifyAudit(string[] args)
+        {
+            string file;
+            if (args.Length >= 2 && !string.IsNullOrWhiteSpace(args[1]))
+                file = args[1];
+            else
+            {
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DiskCleanerPro", "logs");
+                file = Path.Combine(dir, "elevated-" + DateTime.Now.ToString("yyyyMMdd") + ".log");
+            }
+
+            if (!File.Exists(file))
+            {
+                Console.WriteLine("审计日志不存在，无需验证: " + file);
+                return 0;
+            }
+
+            if (VerifyAuditLog(file, out int bad))
+            {
+                Console.WriteLine("OK: 审计日志哈希链完整 -> " + file);
+                return 0;
+            }
+            Console.WriteLine($"BROKEN: 第 {bad} 行哈希不匹配，日志可能已被篡改 -> " + file);
+            return 2;
         }
 
         // #12 修复：原 EscapeJson 仅转义 \ " CR LF TAB，未覆盖 BS(0x08)/FF(0x0C)

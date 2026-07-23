@@ -36,6 +36,7 @@ namespace DiskCleaner.SmokeTest
                 Run("SoftwareManager_拒绝危险MsiExec(行为)", SoftwareManager_RejectUnsafeMsi);
                 Run("ElevatedHelper_守卫(反射, R16)", ElevatedHelper_Guards);
                 Run("ElevationHelper_N2_Release签名阻断", ElevationHelper_N2_ReleaseBlocking);
+                Run("AuditLog_哈希链完整性(#13)", AuditLog_HashChainIntegrity);
             }
             catch (Exception ex)
             {
@@ -296,6 +297,53 @@ namespace DiskCleaner.SmokeTest
                 Assert(helperPath != null, "Release 下已签名 helper 应被放行");
 #endif
             Console.WriteLine($"        (N2 签名校验: 签名={signed}, 阻断={helperPath == null})");
+        }
+
+        static void AuditLog_HashChainIntegrity()
+        {
+            // #13：审计日志哈希链完整性。构造正确链应被 VerifyAuditLog 接受；
+            // 篡改任一行的 payload，其后续行的 _h 必然失配，VerifyAuditLog 应判定断裂。
+            var t = typeof(DiskCleaner.Elevated.Program);
+            var verify = t.GetMethod("VerifyAuditLog", BindingFlags.NonPublic | BindingFlags.Static);
+            var hashFn = t.GetMethod("ComputeChainHash", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert(verify != null && hashFn != null, "反射获取 VerifyAuditLog / ComputeChainHash 失败");
+
+            var bodies = new[]
+            {
+                "{\"ts\":\"2026-01-01T00:00:00\",\"op\":\"delete\",\"detail\":\"x\",\"result\":\"start\",\"code\":0}",
+                "{\"ts\":\"2026-01-01T00:00:01\",\"op\":\"delete\",\"detail\":\"x\",\"result\":\"success\",\"code\":0}",
+                "{\"ts\":\"2026-01-01T00:00:02\",\"op\":\"symlink\",\"detail\":\"a -> b\",\"result\":\"blocked-protected\",\"code\":1}",
+            };
+
+            string prev = "";
+            var goodLines = new List<string>();
+            foreach (var b in bodies)
+            {
+                var h = (string)hashFn.Invoke(null, new object[] { prev, b });
+                goodLines.Add(b.Substring(0, b.Length - 1) + ",\"_h\":\"" + h + "\"}");
+                prev = h;
+            }
+
+            var goodFile = Path.Combine(Path.GetTempPath(), "dc_audit_good_" + Guid.NewGuid().ToString("N") + ".log");
+            File.WriteAllLines(goodFile, goodLines);
+            var argsGood = new object[] { goodFile, 0 };
+            var okGood = (bool)verify.Invoke(null, argsGood);
+            File.Delete(goodFile);
+            Assert(okGood, "未篡改的哈希链日志应验证通过");
+
+            // 篡改第 2 行（index 1）的 result
+            var badLines = new List<string>(goodLines);
+            badLines[1] = badLines[1].Replace("\"result\":\"success\"", "\"result\":\"TAMPERED\"");
+            var badFile = Path.Combine(Path.GetTempPath(), "dc_audit_bad_" + Guid.NewGuid().ToString("N") + ".log");
+            File.WriteAllLines(badFile, badLines);
+            var argsBad = new object[] { badFile, 0 };
+            var okBad = (bool)verify.Invoke(null, argsBad);
+            int broken = (int)argsBad[1];
+            File.Delete(badFile);
+            Assert(!okBad, "被篡改的日志应被哈希链检测为断裂");
+            Assert(broken == 2, $"篡改第 2 行时，断裂应定位在第 2 行（实际 {broken}）");
+
+            Console.WriteLine("        (#13 哈希链: 完整日志通过 / 篡改日志于第 2 行断裂)");
         }
 
         // ---------- 工具 ----------
