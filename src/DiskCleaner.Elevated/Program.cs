@@ -125,24 +125,56 @@ namespace DiskCleaner.Elevated
 
             if (!Directory.Exists(path)) return;
 
-            // 不跟随交接点/符号链接
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                return;
+            // 顶层路径若是重解析点（junction/符号链接），整体不处理：不删除链接本身，也不跟随其目标
+            if (IsReparsePoint(path)) return;
 
-            foreach (var file in Directory.GetFiles(path))
-            {
-                try { File.Delete(file); }
-                catch { /* 继续删除其余 */ }
-            }
+            DeleteDirectoryTree(path);
+        }
 
-            foreach (var dir in Directory.GetDirectories(path))
+        /// <summary>
+        /// 递归删除目录树，但不跟随重解析点。用枚举层 Attributes 判断重解析点（非阻塞，不访问 junction/符号链接目标），
+        /// 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同主程序各扫描模块修复）。
+        /// </summary>
+        private static void DeleteDirectoryTree(string path)
+        {
+            var di = new DirectoryInfo(path);
+            foreach (var fsi in di.EnumerateFileSystemInfos())
             {
-                try { DeleteRecursive(dir); }
-                catch { /* 继续 */ }
+                if (fsi.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    continue;   // 不删除、不递归重解析点
+
+                if (fsi is DirectoryInfo subDir)
+                    DeleteDirectoryTree(subDir.FullName);
+                else
+                {
+                    try { File.Delete(fsi.FullName); }
+                    catch { /* 继续删除其余 */ }
+                }
             }
 
             try { Directory.Delete(path, false); }
             catch { /* 可能目录非空 */ }
+        }
+
+        /// <summary>
+        /// 非阻塞判断 path 是否为重解析点：从其父目录枚举中取该条目的 Attributes（不访问目标，不跟随 junction）。
+        /// 替代 File.GetAttributes(path)（在失效/离线 junction 上可能阻塞）。
+        /// </summary>
+        private static bool IsReparsePoint(string path)
+        {
+            try
+            {
+                var parent = Directory.GetParent(path);
+                if (parent == null) return false;
+                var leaf = Path.GetFileName(path.TrimEnd('\\', '/'));
+                if (string.IsNullOrEmpty(leaf)) return false;
+                foreach (var fsi in parent.EnumerateFileSystemInfos(leaf))
+                {
+                    return fsi.Attributes.HasFlag(FileAttributes.ReparsePoint);
+                }
+                return false;
+            }
+            catch { return false; }
         }
 
         // ── uninstall "<full uninstall command line>" ──

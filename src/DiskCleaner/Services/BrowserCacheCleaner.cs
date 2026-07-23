@@ -222,17 +222,17 @@ namespace DiskCleaner.Services
                         var cur = dirStack.Pop();
                         try
                         {
-                            foreach (var d in Directory.GetDirectories(cur))
+                            // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
+                            // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同其他模块修复）。
+                            NativeMethods.ForEachEntry(cur, e =>
                             {
-                                try
-                                {
-                                    if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
-                                        continue;
-                                }
-                                catch { continue; }
-                                ordered.Add(d);
-                                dirStack.Push(d);
-                            }
+                                if (e.Name == "." || e.Name == "..") return;
+                                if (!e.IsDirectory) return;
+                                if (e.IsReparsePoint) return;      // 不跟随重解析点
+                                var full = Path.Combine(cur, e.Name);
+                                ordered.Add(full);
+                                dirStack.Push(full);
+                            });
                         }
                         catch { /* */ }
                     }
@@ -291,23 +291,20 @@ namespace DiskCleaner.Services
                         yield return f;
                 }
 
-                // 子目录收集（跳过交接点/符号链接，避免误删其指向的目标目录）
-                string[] dirs = null;
-                try { dirs = Directory.GetDirectories(current); }
-                catch { /* 无权限 */ }
-                if (dirs != null)
+                // 子目录收集（跳过重解析点，避免误删其指向的目标目录）
+                // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
+                // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同其他模块修复）。
+                try
                 {
-                    foreach (var d in dirs)
+                    NativeMethods.ForEachEntry(current, e =>
                     {
-                        try
-                        {
-                            if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
-                                continue;
-                        }
-                        catch { continue; }
-                        stack.Push(d);
-                    }
+                        if (e.Name == "." || e.Name == "..") return;
+                        if (!e.IsDirectory) return;
+                        if (e.IsReparsePoint) return;      // 不跟随重解析点
+                        stack.Push(Path.Combine(current, e.Name));
+                    });
                 }
+                catch { /* 无权限 */ }
             }
         }
     }

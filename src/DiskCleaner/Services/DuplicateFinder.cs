@@ -59,20 +59,18 @@ namespace DiskCleaner.Services
 
                     try
                     {
-                        foreach (var dir in Directory.EnumerateDirectories(current))
+                        // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
+                        // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同 DiskAnalyzer/TempFileCleaner 修复）。
+                        var subDirs = new List<string>();
+                        NativeMethods.ForEachEntry(current, e =>
                         {
-                            var name = Path.GetFileName(dir);
-                            if (SkipDirs.Contains(name)) continue;
-
-                            try
-                            {
-                                var attr = File.GetAttributes(dir);
-                                if ((attr & FileAttributes.ReparsePoint) != 0) continue;
-                            }
-                            catch { continue; }
-
-                            stack.Push(dir);
-                        }
+                            if (e.Name == "." || e.Name == "..") return;
+                            if (!e.IsDirectory) return;
+                            if (e.IsReparsePoint) return;            // 不跟随重解析点
+                            if (SkipDirs.Contains(e.Name)) return;
+                            subDirs.Add(Path.Combine(current, e.Name));
+                        }, ct);
+                        foreach (var dir in subDirs) stack.Push(dir);
                     }
                     catch { }
                 }

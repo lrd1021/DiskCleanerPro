@@ -336,23 +336,22 @@ namespace DiskCleaner.Services
                     while (dirStack.Count > 0)
                     {
                         var cur = dirStack.Pop();
-                        string[] sub = null;
-                        try { sub = Directory.GetDirectories(cur); }
+                        try
+                        {
+                            // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
+                            // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同 EnumerateFilesSafe 修复）。
+                            NativeMethods.ForEachEntry(cur, e =>
+                            {
+                                if (e.Name == "." || e.Name == "..") return;
+                                if (!e.IsDirectory) return;
+                                if (e.IsReparsePoint) return;      // 不跟随重解析点
+                                var full = Path.Combine(cur, e.Name);
+                                allDirs.Add(full);
+                                dirStack.Push(full);
+                            }, ct);
+                        }
                         catch (IOException) { }
                         catch (UnauthorizedAccessException) { }
-                        if (sub == null) continue;
-                        foreach (var d in sub)
-                        {
-                            try
-                            {
-                                if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
-                                    continue;
-                            }
-                            catch (IOException) { continue; }
-                            catch (UnauthorizedAccessException) { continue; }
-                            allDirs.Add(d);
-                            dirStack.Push(d);
-                        }
                     }
 
                     foreach (var dir in allDirs.OrderByDescending(d => d.Length))

@@ -67,24 +67,21 @@ namespace DiskCleaner.Services
 
                     try
                     {
-                        foreach (var dir in Directory.GetDirectories(current))
+                        // 用 ForEachEntry 读取枚举层 Attributes（非阻塞，不访问 junction 目标），
+                        // 避免对子目录调用 File.GetAttributes 在失效/离线 junction 上阻塞（同 DiskAnalyzer/TempFileCleaner 修复）。
+                        var subDirs = new List<string>();
+                        NativeMethods.ForEachEntry(current, e =>
                         {
-                            var name = Path.GetFileName(dir);
-                            if (name.Equals("Windows", StringComparison.OrdinalIgnoreCase) ||
-                                name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase) ||
-                                name.StartsWith("Program Files", StringComparison.OrdinalIgnoreCase))
-                                continue;
-
-                            // 跳过符号链接/交接点防止循环
-                            try
-                            {
-                                if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0)
-                                    continue;
-                            }
-                            catch { continue; }
-
-                            stack.Push(dir);
-                        }
+                            if (e.Name == "." || e.Name == "..") return;
+                            if (!e.IsDirectory) return;
+                            if (e.IsReparsePoint) return;            // 不跟随重解析点
+                            if (e.Name.Equals("Windows", StringComparison.OrdinalIgnoreCase) ||
+                                e.Name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase) ||
+                                e.Name.StartsWith("Program Files", StringComparison.OrdinalIgnoreCase))
+                                return;
+                            subDirs.Add(Path.Combine(current, e.Name));
+                        }, ct);
+                        foreach (var dir in subDirs) stack.Push(dir);
                     }
                     catch { /* */ }
 
