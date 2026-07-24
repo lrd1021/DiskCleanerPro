@@ -177,6 +177,7 @@ namespace DiskCleaner.Services
 
                 // MsiExec 仍需校验参数（禁止 /i /package 等安装动作与远程目标），
                 // 否则 HKCU 写入 "MsiExec.exe /i \\\\evil\\a.msi" 可由管理员点击触发 RCE
+                bool userConfirmed = false;
                 if (isMsi)
                 {
                     // 合法 MsiExec 仍需显式确认，且默认选“否”
@@ -192,6 +193,7 @@ namespace DiskCleaner.Services
                         OnProgress?.Invoke(100, $"已取消卸载：{software.Name}");
                         return false;
                     }
+                    userConfirmed = true;
                 }
                 else
                 {
@@ -210,12 +212,15 @@ namespace DiskCleaner.Services
                             OnProgress?.Invoke(100, $"已取消卸载：{software.Name}");
                             return false;
                         }
+                        userConfirmed = true;
                     }
                 }
 
                 OnProgress?.Invoke(70, $"正在启动卸载程序：{software.Name}");
 
-                if (!ElevationHelper.UninstallElevated(software.UninstallString))
+                // 用户已在安全警告弹窗中确认跳过签名校验，把该状态传给 Elevated helper，
+                // 避免 helper 内部重复拦截导致 UAC 通过后无任何反应。
+                if (!ElevationHelper.UninstallElevated(software.UninstallString, userConfirmed))
                 {
                     OnProgress?.Invoke(100, $"卸载失败或已取消：{software.Name}");
                     return false;

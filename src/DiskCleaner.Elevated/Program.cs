@@ -205,19 +205,36 @@ namespace DiskCleaner.Elevated
             catch { return false; }
         }
 
-        // ── uninstall "<full uninstall command line>" ──
+        // ── uninstall [--force] "<full uninstall command line>" ──
         private static int Uninstall(string[] args)
         {
-            if (args.Length != 2)
+            if (args.Length < 2 || args.Length > 3)
             {
-                Console.Error.WriteLine("用法: uninstall \"<full command line>\"");
+                Console.Error.WriteLine("用法: uninstall [--force] \"<full command line>\"");
                 return 1;
             }
 
-            var commandLine = args[1];
+            bool force = args.Length == 3 && args[1].Equals("--force", StringComparison.OrdinalIgnoreCase);
+            var commandLine = args[args.Length - 1];
+
             if (!TryParseCommandLine(commandLine, out var fileName, out var arguments))
             {
                 Console.Error.WriteLine("无法解析卸载命令");
+                return 1;
+            }
+
+            if (!IsLocalPath(fileName))
+            {
+                Console.Error.WriteLine("拒绝启动远程/URL 路径的卸载程序");
+                Audit("uninstall", commandLine, "blocked-remote", 1);
+                return 1;
+            }
+
+            // 无论是否强制，都拒绝脚本宿主 / Shell 解释器，防止借 uninstall 执行任意命令
+            if (IsInterpreter(Path.GetFileName(fileName)))
+            {
+                Console.Error.WriteLine("拒绝将脚本解释器作为卸载程序启动");
+                Audit("uninstall", commandLine, "blocked-interpreter", 1);
                 return 1;
             }
 
@@ -239,9 +256,17 @@ namespace DiskCleaner.Elevated
                 try { resolvedFile = Path.GetFullPath(fileName); }
                 catch { resolvedFile = fileName; }
 
-                if (!IsTrustworthyUninstaller(resolvedFile))
+                if (!File.Exists(resolvedFile))
+                {
+                    Console.Error.WriteLine($"未找到卸载程序: {resolvedFile}");
+                    Audit("uninstall", commandLine, "not-found", 1);
+                    return 1;
+                }
+
+                if (!force && !IsTrustworthyUninstaller(resolvedFile))
                 {
                     Console.Error.WriteLine("卸载程序未通过受信任目录/签名校验");
+                    Audit("uninstall", commandLine, "blocked-trust", 1);
                     return 1;
                 }
             }
@@ -254,18 +279,19 @@ namespace DiskCleaner.Elevated
                 CreateNoWindow = false
             };
 
+            Audit("uninstall", commandLine, force ? "start-forced" : "start", 0);
             using var process = Process.Start(psi);
-			if (process == null)
-			{
-				Audit("uninstall", commandLine, "start-failed", 1);
-				return 1;
-			}
-			process.WaitForExit();
-			int code = process.ExitCode;
-			bool ok = code == 0 || code == 3010;
-			Audit("uninstall", commandLine, ok ? "success" : "fail", code);
-			return ok ? 0 : code;
-		}
+            if (process == null)
+            {
+                Audit("uninstall", commandLine, "start-failed", 1);
+                return 1;
+            }
+            process.WaitForExit();
+            int code = process.ExitCode;
+            bool ok = code == 0 || code == 3010;
+            Audit("uninstall", commandLine, ok ? "success" : "fail", code);
+            return ok ? 0 : code;
+        }
 
         // ── 工具方法 ──
 
@@ -652,37 +678,7 @@ namespace DiskCleaner.Elevated
         [DllImport("kernel32.dll")]
         private static extern IntPtr LocalFree(IntPtr hMem);
 
-        private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 =
-            new Guid("{00AAC56B-CD44-11d3-8A2E-00902781C19B}");
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct WINTRUST_FILE_INFO
-        {
-            public int cbStruct;
-            [MarshalAs(UnmanagedType.LPWStr)] public string pcwszFilePath;
-            public IntPtr hFile;
-            public IntPtr pgKnownSubject;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct WINTRUST_DATA
-        {
-            public int cbStruct;
-            public IntPtr pPolicyCallbackData;
-            public IntPtr pSIPClientData;
-            public int dwUIChoice;
-            public int fdwRevocationChecks;
-            public int dwUnionChoice;
-            public IntPtr pFile;
-            public int dwStateAction;
-            public IntPtr hWVTStateData;
-            public IntPtr pwszURLReference;
-            public int dwProvFlags;
-            public int dwUIContext;
-        }
-
-        [DllImport("wintrust.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid pgActionID, ref WINTRUST_DATA pWVTData);
+        // 签名链校验改用 .NET X509Chain（见 VerifySignatureChain），不再依赖 WinVerifyTrust P/Invoke。
 
         /// <summary>内置已知签名者指纹（发布 CA 证书时填入；自签场景留空，由 signing-thumbprint.txt / 环境变量提供）。</summary>
         private static readonly string[] KnownSignerThumbprints = new string[0];
@@ -716,34 +712,18 @@ namespace DiskCleaner.Elevated
             return false;
         }
 
-        /// <summary>仅校验签名链是否可信（WinVerifyTrust == 0），不涉及指纹。</summary>
+        /// <summary>仅校验签名链是否可信（.NET X509Chain 构建到受信任根），不涉及指纹。</summary>
         private static bool VerifySignatureChain(string filePath)
         {
-            var fileInfo = new WINTRUST_FILE_INFO
-            {
-                cbStruct = Marshal.SizeOf<WINTRUST_FILE_INFO>(),
-                pcwszFilePath = filePath,
-                hFile = IntPtr.Zero,
-                pgKnownSubject = IntPtr.Zero
-            };
-            var trustData = new WINTRUST_DATA
-            {
-                cbStruct = Marshal.SizeOf<WINTRUST_DATA>(),
-                dwUIChoice = 2,
-                fdwRevocationChecks = 0,
-                dwUnionChoice = 1,
-                pFile = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>()),
-                dwStateAction = 0,
-                dwProvFlags = 0,
-                dwUIContext = 0
-            };
             try
             {
-                Marshal.StructureToPtr(fileInfo, trustData.pFile, false);
-                return WinVerifyTrust(IntPtr.Zero, WINTRUST_ACTION_GENERIC_VERIFY_V2, ref trustData) == 0;
+                var cert = X509Certificate.CreateFromSignedFile(filePath);
+                using var x2 = new X509Certificate2(cert);
+                var chain = new X509Chain();
+                chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck; // 自签无 CRL，避免联网超时
+                return chain.Build(x2);
             }
             catch { return false; }
-            finally { if (trustData.pFile != IntPtr.Zero) Marshal.FreeHGlobal(trustData.pFile); }
         }
 
         /// <summary>提取 PE 文件 Authenticode 签名者证书指纹（大写十六进制）；无签名/失败返回 null。</summary>

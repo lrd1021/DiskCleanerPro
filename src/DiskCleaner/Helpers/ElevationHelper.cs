@@ -103,10 +103,16 @@ namespace DiskCleaner.Helpers
             return RunElevated("symlink", linkPath, targetPath) == 0;
         }
 
-        /// <summary>尝试以管理员权限执行卸载命令</summary>
-        public static bool UninstallElevated(string uninstallCommandLine)
+        /// <summary>
+        /// 尝试以管理员权限执行卸载命令。
+        /// <param name="uninstallCommandLine">完整卸载命令行。</param>
+        /// <param name="userConfirmedOverride">用户已在主程序安全警告弹窗中点“是”确认跳过签名校验。</param>
+        /// </summary>
+        public static bool UninstallElevated(string uninstallCommandLine, bool userConfirmedOverride = false)
         {
             if (string.IsNullOrWhiteSpace(uninstallCommandLine)) return false;
+            if (userConfirmedOverride)
+                return RunElevated("uninstall", "--force", uninstallCommandLine) == 0;
             return RunElevated("uninstall", uninstallCommandLine) == 0;
         }
 
