@@ -402,7 +402,20 @@ namespace DiskCleaner.Elevated
                 {
                     var argv = new IntPtr[argc];
                     Marshal.Copy(ptr, argv, 0, argc);
-                    fileName = Marshal.PtrToStringUni(argv[0]);
+                    var first = Marshal.PtrToStringUni(argv[0]);
+                    // 修复：未加引号的含空格路径会被 CommandLineToArgvW 误切成多段
+                    // （如 "C:\Program Files (x86)\Netease\UU\uninstall.exe" → 首段 "C:\Program"）。
+                    // 若首段并非真实存在的文件，则贪心取磁盘上存在的最长可执行前缀作为文件名。
+                    if (!File.Exists(first) && !commandLine.Trim().StartsWith("\""))
+                    {
+                        if (ResolveUnquotedExecutable(commandLine.Trim(), out var gName, out var gArgs))
+                        {
+                            fileName = gName;
+                            arguments = gArgs;
+                            return true;
+                        }
+                    }
+                    fileName = first;
                     var sb = new StringBuilder();
                     for (int i = 1; i < argc; i++)
                         sb.Append(Marshal.PtrToStringUni(argv[i])).Append(' ');
@@ -430,6 +443,37 @@ namespace DiskCleaner.Elevated
             fileName = parts[0];
             arguments = parts.Length > 1 ? parts[1] : "";
             return true;
+        }
+
+        // 当 CommandLineToArgvW 把"未加引号的含空格路径"误切成多段时，
+        // 贪心取磁盘上真实存在的最长可执行前缀作为文件名（常见于卸载字符串：C:\Program Files (x86)\X\uninstall.exe /S）。
+        private static bool ResolveUnquotedExecutable(string commandLine, out string fileName, out string arguments)
+        {
+            fileName = null;
+            arguments = null;
+            if (commandLine.StartsWith("\"")) return false;
+            var parts = commandLine.Split(' ');
+            var sb = new StringBuilder();
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                sb.Append(parts[i]);
+                var candidate = sb.ToString();
+                var ext = Path.GetExtension(candidate);
+                if ((ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".msi", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".bat", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase)) &&
+                    File.Exists(candidate))
+                {
+                    fileName = candidate;
+                    arguments = (i + 1 < parts.Length)
+                        ? string.Join(" ", parts, i + 1, parts.Length - i - 1)
+                        : "";
+                    return true;
+                }
+            }
+            return false;
         }
 
         internal static bool IsTrustworthyUninstaller(string path)
