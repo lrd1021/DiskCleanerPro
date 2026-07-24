@@ -166,6 +166,20 @@ namespace DiskCleaner.Services
                     catch { resolvedFile = fileName; }
                 }
 
+                // 非 MsiExec 卸载：卸载程序文件必须真实存在，否则无法启动
+                // （注册表残留/软件已被卸载场景）。提前给出明确提示，避免误弹"是否仍要执行"框、
+                // 用户点"是"后拉起 UAC、helper 才发现文件不存在而静默退出（表现为"点了没反应"）。
+                if (!isMsi && !File.Exists(resolvedFile))
+                {
+                    OnProgress?.Invoke(100, $"找不到卸载程序：{resolvedFile}");
+                    System.Windows.MessageBox.Show(
+                        $"找不到卸载程序：\n\n{resolvedFile}\n\n该软件可能已被卸载，或注册表中的卸载路径已失效。建议从软件列表中移除该项。",
+                        "无法卸载 — DiskCleaner Pro",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                    return false;
+                }
+
                 // MsiExec 参数严格白名单：只允许 /X{GUID} 或 /uninstall <本地.msi>
                 if (isMsi && !IsSafeMsiUninstall(arguments))
                 {

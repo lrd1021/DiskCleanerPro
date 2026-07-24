@@ -486,34 +486,55 @@ namespace DiskCleaner.Elevated
                 for (int i = 0; i < argc; i++) tokens[i] = Marshal.PtrToStringUni(argv[i]);
 
                 // 形式一：动作与目标连写，如 /X{GUID}（注册表常见形态，仅一个 token）
-                // 注意：必须与 SoftwareManager 保持一致，否则提权卸载路径会错误地拒绝合法卸载
                 if (tokens.Length == 1)
                 {
                     return Regex.IsMatch(tokens[0] ?? "",
                         @"^[-/][xX]\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
                 }
 
-                // 形式二：动作与目标分开，必须恰好两个 token（拒绝任何多余开关）
-                if (tokens.Length == 2)
+                // 形式二：卸载动作 + 目标 [+ 可选安全静默开关]
+                // 第一个 token 必须是卸载动作（/x /uninstall），拒绝任何安装动作（/i /package 等）
+                var action = tokens[0].ToLowerInvariant();
+                if (action != "/x" && action != "-x" &&
+                    action != "/uninstall" && action != "-uninstall")
+                    return false;
+
+                // 第二个 token 是目标：合法产品 GUID 或本地 .msi 文件（拒绝远程/URL 目标）
+                var target = tokens[1].Trim('"', '\'');
+                bool targetOk;
+                if (action == "/x" || action == "-x")
                 {
-                    var action = tokens[0].ToLowerInvariant();
-                    var target = tokens[1].Trim('"', '\'');
-
-                    if (action == "/x" || action == "-x")
-                        return Regex.IsMatch(target, @"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
-
-                    if (action == "/uninstall" || action == "-uninstall")
-                    {
-                        if (target.StartsWith("\\\\")) return false;
-                        if (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                            target.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-                            target.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase))
-                            return false;
-                        return target.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) &&
-                               Regex.IsMatch(target, @"^[A-Za-z]:\\");
-                    }
+                    targetOk = Regex.IsMatch(target,
+                        @"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$");
                 }
-                return false;
+                else // /uninstall：本地 .msi
+                {
+                    targetOk = target.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) &&
+                               Regex.IsMatch(target, @"^[A-Za-z]:\\") &&
+                               !target.StartsWith("\\\\") &&
+                               !target.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                               !target.StartsWith("https", StringComparison.OrdinalIgnoreCase) &&
+                               !target.StartsWith("ftp", StringComparison.OrdinalIgnoreCase);
+                }
+                if (!targetOk) return false;
+
+                // 允许已知安全静默/日志开关；任何未知或潜在危险开关（如 /i /t /gv /package）一律拒绝。
+                // 这样合法卸载（常带 /qn /quiet /norestart 等）不会被误拒，仍守住 RCE 防线。
+                var safeSwitches = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "/qn", "/quiet", "/passive", "/qb", "/q", "/qr",
+                    "/norestart", "/forcerestart", "/promptrestart", "/noreboot", "/nui"
+                };
+                for (int i = 2; i < tokens.Length; i++)
+                {
+                    var sw = tokens[i].Trim('"', '\'');
+                    if (string.IsNullOrWhiteSpace(sw)) continue;
+                    if (safeSwitches.Contains(sw)) continue;
+                    if (sw.StartsWith("/l", StringComparison.OrdinalIgnoreCase)) continue;   // 日志：/l*v /le /lv 等
+                    if (sw.StartsWith("/log", StringComparison.OrdinalIgnoreCase)) continue;
+                    return false; // 未知/潜在危险开关
+                }
+                return true;
             }
             finally { LocalFree(ptr); }
         }
