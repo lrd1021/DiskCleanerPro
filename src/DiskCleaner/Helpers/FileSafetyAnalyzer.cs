@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows.Media;
 
 namespace DiskCleaner.Helpers
@@ -263,7 +264,18 @@ namespace DiskCleaner.Helpers
                 return info;
             }
 
-            // 6. 无法识别
+            // 6. GUID/哈希命名的应用缓存（如 Unity/Tuanjie SpriteAtlas 缓存、图集缓存）
+            // 文件名形如 A7-24-...-EB-41-00-EC-56-0-512-512，无扩展名，常出现在用户 AppData 或项目 Library 缓存目录
+            if (IsGuidCacheFileName(fileName))
+            {
+                info.Level = FileSafetyLevel.Caution;
+                info.Description = "应用缓存文件（GUID/哈希命名）";
+                info.Reason = "文件名由 GUID/哈希组成，通常是图集、纹理或资源缓存";
+                info.Suggestion = "若对应项目或应用已不使用，可删除；仍在使用时会自动重建";
+                return info;
+            }
+
+            // 7. 无法识别
             info.Level = FileSafetyLevel.Unknown;
             info.Description = $"未知文件类型 (.{ext})";
             info.Reason = "无法自动识别此文件类型";
@@ -330,6 +342,25 @@ namespace DiskCleaner.Helpers
                 Reason = "无法自动判断安全性，建议先查看目录内容",
                 Suggestion = "请在查看内部文件后决定"
             };
+        }
+
+        /// <summary>
+        /// 识别 GUID/UUID 被拆分为 2 位十六进制段、并以连字符连接的应用缓存文件名。
+        /// 典型如 Unity/Tuanjie SpriteAtlas 缓存：A7-24-26-...-EB-41-00-EC-56-0-512-512。
+        /// 这类文件无扩展名，靠哈希/GUID 定位资源，删除后应用通常会按需重建。
+        /// </summary>
+        private static bool IsGuidCacheFileName(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return false;
+
+            // 无扩展名（或整个名字被当成一个段）
+            if (Path.GetExtension(fileName) != string.Empty) return false;
+
+            // 必须全部由 [0-9A-F]{2} 段和连字符组成；末尾可接 -<数字>-<数字> 的尺寸后缀
+            // 至少 10 段 2 位十六进制，避免误伤普通短横线文件名
+            return Regex.IsMatch(fileName,
+                @"^([0-9A-Fa-f]{2}-){10,}[0-9A-Fa-f]{2}(-\d+-\d+)?$",
+                RegexOptions.Compiled | RegexOptions.CultureInvariant);
         }
 
         private static string GetShortPath(string path)
