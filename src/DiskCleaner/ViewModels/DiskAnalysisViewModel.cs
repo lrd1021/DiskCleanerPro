@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -14,12 +15,28 @@ namespace DiskCleaner.ViewModels
     {
         private readonly DiskAnalyzer _analyzer = new DiskAnalyzer();
         private ObservableCollection<FileNode> _rootFolders;
+        private ObservableCollection<DriveItem> _drives;
+        private DriveItem _selectedDrive;
         private FileNode _selectedFolder;
         private bool _isAnalyzing;
         private int _progress;
         private string _progressText;
         private long _totalSize;
         private CancellationTokenSource _cts;
+
+        /// <summary>可选盘符（仅已就绪的固定本地盘）。</summary>
+        public ObservableCollection<DriveItem> Drives
+        {
+            get => _drives;
+            set => Set(ref _drives, value);
+        }
+
+        /// <summary>当前选中的盘符；为 null 时 AnalyzeAsync 退化为系统盘。</summary>
+        public DriveItem SelectedDrive
+        {
+            get => _selectedDrive;
+            set => Set(ref _selectedDrive, value);
+        }
 
         public ObservableCollection<FileNode> RootFolders
         {
@@ -76,6 +93,7 @@ namespace DiskCleaner.ViewModels
 
         public DiskAnalysisViewModel()
         {
+            LoadDrives();
             AnalyzeCommand = new RelayCommand(async () => await AnalyzeAsync(), () => !IsAnalyzing);
             CancelCommand = new RelayCommand(() => Cancel());
             OpenInExplorerCommand = new RelayCommand<FileNode>(node =>
@@ -94,6 +112,35 @@ namespace DiskCleaner.ViewModels
             };
         }
 
+        /// <summary>枚举已就绪的固定本地盘，预选系统盘。任一异常降级为仅 C 盘（review_DiskCleanerPro.md：多盘分析）。</summary>
+        private void LoadDrives()
+        {
+            try
+            {
+                var sysRoot = Path.GetPathRoot(Environment.SystemDirectory);
+                var list = new ObservableCollection<DriveItem>();
+                foreach (var d in DriveInfo.GetDrives())
+                {
+                    if (!d.IsReady || d.DriveType != DriveType.Fixed) continue;
+                    var root = d.RootDirectory.FullName;
+                    var label = !string.IsNullOrWhiteSpace(d.VolumeLabel)
+                        ? $"{d.Name.TrimEnd('\\')} ({d.VolumeLabel})"
+                        : d.Name.TrimEnd('\\');
+                    var item = new DriveItem { Root = root, Label = label };
+                    list.Add(item);
+                    if (string.Equals(root.TrimEnd('\\'), sysRoot?.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                        SelectedDrive = item;
+                }
+                Drives = list;
+                if (SelectedDrive == null && list.Count > 0) SelectedDrive = list[0];
+            }
+            catch
+            {
+                Drives = new ObservableCollection<DriveItem> { new DriveItem { Root = "C:\\", Label = "C盘" } };
+                SelectedDrive = Drives[0];
+            }
+        }
+
         private async Task AnalyzeAsync()
         {
             IsAnalyzing = true;
@@ -101,14 +148,15 @@ namespace DiskCleaner.ViewModels
             // 仅属性变化不会自动刷新按钮可用性，需主动触发一次全局重查）
             System.Windows.Input.CommandManager.InvalidateRequerySuggested();
             Progress = 0;
-            ProgressText = "正在分析 C 盘...";
+            var drive = SelectedDrive ?? new DriveItem { Root = Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\", Label = "C盘" };
+            ProgressText = $"正在分析 {drive.Label}...";
             _cts?.Dispose();
             _cts = new CancellationTokenSource();
             RootFolders = new ObservableCollection<FileNode>();
 
             try
             {
-                var root = System.IO.Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\";
+                var root = drive.Root;
                 var folders = await _analyzer.AnalyzeDriveAsync(root, _cts.Token);
                 TotalSize = 0;
                 foreach (var f in folders)
@@ -116,7 +164,7 @@ namespace DiskCleaner.ViewModels
                     TotalSize += f.SizeBytes;
                     RootFolders.Add(f);
                 }
-                ProgressText = $"分析完成，C盘根目录共占用 {TotalSizeDisplay}";
+                ProgressText = $"分析完成，{drive.Label}根目录共占用 {TotalSizeDisplay}";
                 AnalyzeButtonText = "重新分析";
             }
             catch (System.OperationCanceledException)
@@ -142,5 +190,13 @@ namespace DiskCleaner.ViewModels
             _cts?.Cancel();
             ProgressText = "正在取消...";
         }
+    }
+
+    /// <summary>磁盘分析页可选的盘符项（仅用于 UI 绑定，底层 DiskAnalyzer 支持任意盘根）。</summary>
+    public class DriveItem
+    {
+        public string Root { get; set; }
+        public string Label { get; set; }
+        public override string ToString() => Label;
     }
 }

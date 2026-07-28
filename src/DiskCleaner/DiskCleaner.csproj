@@ -13,6 +13,9 @@
     <LangVersion>12.0</LangVersion>
     <Nullable>disable</Nullable>
     <ApplicationIcon>Assets\logo.ico</ApplicationIcon>
+    <!-- 安全：显式关闭 BinaryFormatter（代码未使用；默认 false，但 SDK 可能因传递依赖自动置 true，
+         显式置 false 可消除运行时序列化后门告警，见 review_DiskCleanerPro.md §4-6 -->
+    <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
   <!-- Release 发布包剥离 pdb，降低被逆向风险 -->

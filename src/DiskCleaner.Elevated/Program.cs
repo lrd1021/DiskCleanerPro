@@ -29,6 +29,15 @@ namespace DiskCleaner.Elevated
 
             var verb = args[0].ToLowerInvariant();
 
+            // §4-2 调用方鉴权：仅允许由本应用（同证书签名）进程拉起，
+            // 拒绝任意第三方 / 手动双击方式复用本提权原语。失败闭锁并写审计。
+            if (!AuthorizeCaller())
+            {
+                Console.Error.WriteLine("调用方鉴权失败：Elevated Helper 仅可由本应用（同签名）拉起");
+                Audit("caller-auth", string.Join(" ", args), "blocked-unauthorized-caller", 1);
+                return 0x4C9; // 自定义退出码：调用方未授权
+            }
+
             // 自检：写操作必须以管理员运行；verifyaudit 为只读验证，无需提权
             if (verb != "verifyaudit" && !IsElevated())
             {
@@ -300,6 +309,70 @@ namespace DiskCleaner.Elevated
             using var identity = WindowsIdentity.GetCurrent();
             var principal = new WindowsPrincipal(identity);
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+
+        /// <summary>§4-2 调用方鉴权：取父进程，校验其 Authenticode 签名者指纹与自身一致（或 dev 下路径匹配），否则拒绝。</summary>
+        private static bool AuthorizeCaller()
+        {
+            try
+            {
+                // 排障逃生口：极少数环境若 UAC 提权后父进程非主程序（如被 appinfo 链路改写），
+                // 可设置此环境变量临时跳过鉴权（仅用于诊断，不应用于正式发布）。
+                if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISKCLEANER_SKIP_CALLER_CHECK")))
+                    return true;
+
+                var ownPath = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
+                if (string.IsNullOrEmpty(ownPath)) return false;
+
+                var ownTp = GetSignerThumbprint(ownPath);
+                var parentPid = GetParentPid();
+                if (parentPid == 0) return false; // 无法确认父进程，fail-closed
+
+                string parentPath = null;
+                try
+                {
+                    using var p = Process.GetProcessById((int)parentPid);
+                    parentPath = p.MainModule?.FileName;
+                }
+                catch { parentPath = null; }
+                if (string.IsNullOrEmpty(parentPath)) return false;
+
+                if (ownTp != null)
+                {
+                    // 已签名发布：要求父进程同证书签名（指纹一致），仅同证书的主程序可拉起本 helper。
+                    var parentTp = GetSignerThumbprint(parentPath);
+                    return parentTp != null && parentTp.Equals(ownTp, StringComparison.OrdinalIgnoreCase);
+                }
+                else
+                {
+                    // 未签名开发构建：要求父进程为预期主程序可执行文件（按路径/文件名匹配）。
+                    var expected = Path.Combine(AppContext.BaseDirectory, "DiskCleanerPro.exe");
+                    return parentPath.Equals(expected, StringComparison.OrdinalIgnoreCase)
+                        || Path.GetFileName(parentPath).Equals("DiskCleanerPro.exe", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>遍历进程快照取当前进程的父进程 PID；失败返回 0。</summary>
+        private static uint GetParentPid()
+        {
+            var self = (uint)Process.GetCurrentProcess().Id;
+            IntPtr snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap == (IntPtr)(-1)) return 0;
+            try
+            {
+                var entry = new PROCESSENTRY32 { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32>() };
+                if (Process32First(snap, ref entry))
+                {
+                    do
+                    {
+                        if (entry.th32ProcessID == self) return entry.th32ParentProcessID;
+                    } while (Process32Next(snap, ref entry));
+                }
+            }
+            finally { CloseHandle(snap); }
+            return 0;
         }
 
         internal static bool IsLocalPath(string path)
@@ -742,6 +815,37 @@ namespace DiskCleaner.Elevated
 
         [DllImport("kernel32.dll")]
         private static extern IntPtr LocalFree(IntPtr hMem);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        // ── 调用方鉴权 P/Invoke（§4-2）──
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct PROCESSENTRY32
+        {
+            public uint dwSize;
+            public uint cntUsage;
+            public uint th32ProcessID;
+            public IntPtr th32DefaultHeapID;
+            public uint th32ModuleID;
+            public uint cntThreads;
+            public uint th32ParentProcessID;
+            public int pcPriClassBase;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szExeFile;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+        private const uint TH32CS_SNAPPROCESS = 0x00000002;
 
         // 签名链校验改用 .NET X509Chain（见 VerifySignatureChain），不再依赖 WinVerifyTrust P/Invoke。
 

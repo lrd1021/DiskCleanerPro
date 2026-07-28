@@ -7,16 +7,20 @@
         <Border DockPanel.Dock="Top" Padding="32,28,32,16">
             <StackPanel>
                 <TextBlock Text="磁盘空间分析" FontSize="24" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,4" />
-                <TextBlock Text="可视化分析C盘各目录空间占用，快速定位大文件夹" FontSize="14" Foreground="{StaticResource TextSecondaryBrush}" />
+                <TextBlock Text="可视化分析各磁盘目录空间占用，快速定位大文件夹" FontSize="14" Foreground="{StaticResource TextSecondaryBrush}" />
 
                 <DockPanel Margin="0,16,0,0">
                     <StackPanel Orientation="Horizontal">
+                        <ComboBox ItemsSource="{Binding Drives}" SelectedItem="{Binding SelectedDrive, Mode=TwoWay}"
+                                  DisplayMemberPath="Label" Width="160" Margin="0,0,10,0"
+                                  Style="{StaticResource ModernComboBox}"
+                                  ToolTip="选择要分析的磁盘（仅显示已就绪的固定本地盘）" />
                         <Button Content="{Binding AnalyzeButtonText}" Command="{Binding AnalyzeCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0" />
                         <Button Content="取消" Command="{Binding CancelCommand}" Style="{StaticResource PrimaryButton}" />
                     </StackPanel>
                     <Border Background="{StaticResource CardBrush}" CornerRadius="6" Padding="16,8" DockPanel.Dock="Right" HorizontalAlignment="Right">
                         <TextBlock FontSize="14">
-                            <Run Text="C盘根目录总占用：" Foreground="{StaticResource TextSecondaryBrush}" />
+                            <Run Text="磁盘根目录总占用：" Foreground="{StaticResource TextSecondaryBrush}" />
                             <Run Text="{Binding TotalSizeDisplay, Mode=OneWay}" Foreground="White" FontWeight="Bold" FontSize="16" />
                         </TextBlock>
                     </Border>

@@ -27,7 +27,11 @@ namespace DiskCleaner.Helpers
 
     public static class AIFileAnalyzer
     {
-        private static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        // 安全修复（review_DiskCleanerPro.md §4-3）：禁用自动跟随重定向。
+        // HttpClient 默认 AllowAutoRedirect=true，若服务端在 https 端点返回 302→http，
+        // Authorization: Bearer <Key> 会被明文发往 http 端点导致密钥泄露。关闭后由 PostJsonAsync 显式拒绝非 https 重定向。
+        private static readonly HttpClient _http =
+            new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
 
         /// <summary>批量分析未知文件（每批最多15个），支持取消与重试</summary>
         public static async Task<List<AIAnalysisResult>> AnalyzeBatchAsync(
@@ -238,9 +242,19 @@ namespace DiskCleaner.Helpers
                 HttpResponseMessage resp = null;
                 try
                 {
-                    resp = await _http.SendAsync(req, ct);
-                    var text = await resp.Content.ReadAsStringAsync(ct);
-                    if (resp.IsSuccessStatusCode) return text;
+                resp = await _http.SendAsync(req, ct);
+
+                // 关键安全修复：即便 AllowAutoRedirect=false，仍显式拒绝任何指向非 https 的最终地址，
+                // 防止 Bearer Key 在降级/重定向链路中泄露到明文通道（fail-closed）。
+                if ((int)resp.StatusCode >= 300 && (int)resp.StatusCode < 400)
+                {
+                    var location = resp.Headers.Location?.ToString() ?? "(无 Location)";
+                    throw new HttpRequestException(
+                        $"API 返回重定向 ({(int)resp.StatusCode}) → {location}，已拒绝跟随以防密钥泄露");
+                }
+
+                var text = await resp.Content.ReadAsStringAsync(ct);
+                if (resp.IsSuccessStatusCode) return text;
 
                     bool isServerError = (int)resp.StatusCode >= 500;
                     if (!isServerError || attempt == maxAttempts - 1)
