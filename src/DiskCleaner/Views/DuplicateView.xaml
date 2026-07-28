@@ -194,8 +194,13 @@
                                                        Foreground="{StaticResource DangerBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                                        Visibility="{Binding KeepThisLocked, Converter={StaticResource BoolToVis}}" />
                                             <TextBlock Text="{Binding SafetyIcon}" FontSize="14" VerticalAlignment="Center" Margin="0,0,4,0" ToolTip="{Binding SafetyTooltip}" Foreground="{Binding SafetyIconBrush}" />
-                                            <TextBlock Text="{Binding AiAnalysisText}" Foreground="{StaticResource AccentBrush}" FontSize="11" VerticalAlignment="Center" Margin="6,0,0,0"
-                                                       Visibility="{Binding HasAiSafety, Converter={StaticResource BoolToVis}}" />
+                                            <!-- AI 简短徽章：行内只显示等级标签，鼠标悬停看完整 AI 分析理由 -->
+                                            <Border Background="#22FFFFFF" CornerRadius="4" Padding="4,1" Margin="6,0,0,0"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="{Binding HasAiSafety, Converter={StaticResource BoolToVis}}"
+                                                    ToolTip="{Binding AiAnalysisToolTip}">
+                                                <TextBlock Text="{Binding AiBadgeText}" Foreground="{Binding AiBadgeBrush}" FontSize="11" VerticalAlignment="Center" />
+                                            </Border>
                                             <TextBlock VerticalAlignment="Center">
                                                 <Run Text="{Binding FileName, Mode=OneWay}" Foreground="White" />
                                                 <Run Text="  " />

@@ -108,10 +108,24 @@ namespace DiskCleaner.Models
         /// <summary>是否已用 AI 分析覆盖本地安全判定（用于 UI 区分来源）。</summary>
         public bool HasAiSafety => _aiSafety != null;
 
-        /// <summary>AI 分析结果短句（仅 AI 已分析时非空），如「AI：Chrome 缓存｜可安全删除」。</summary>
+        /// <summary>AI 分析结果短句（仅 AI 已分析时非空），如「AI：Chrome 缓存｜可安全删除」。
+        /// 当前主要用于 Tooltip/详情；行内改用小徽章 AiBadgeText。</summary>
         public string AiAnalysisText => _aiSafety == null
             ? ""
             : $"AI：{_aiSafety.Description}｜{_aiSafety.Suggestion}";
+
+        /// <summary>AI 判定等级简短标签（行内小徽章），如「AI·安全」「AI·谨慎」「AI·危险」。</summary>
+        public string AiBadgeText => _aiSafety == null
+            ? ""
+            : $"AI·{Safety.LevelText}";
+
+        /// <summary>AI 分析完整 Tooltip：描述、归属/原因、建议。</summary>
+        public string AiAnalysisToolTip => _aiSafety == null
+            ? ""
+            : $"AI 分析：{_aiSafety.Description}\n{_aiSafety.Reason}\n建议：{_aiSafety.Suggestion}";
+
+        /// <summary>AI 徽章颜色，与当前安全图标颜色一致。</summary>
+        public System.Windows.Media.Brush AiBadgeBrush => SafetyIconBrush;
 
         public string SafetyLevelText => Safety.LevelText;
         public string SafetySuggestion => Safety.Suggestion;
@@ -152,7 +166,8 @@ namespace DiskCleaner.Models
             {
                 nameof(SafetyIcon), nameof(SafetyIconBrush), nameof(SafetyTooltip),
                 nameof(SafetyLevel), nameof(SafetyLevelText), nameof(SafetySuggestion),
-                nameof(IsCritical), nameof(KeepThisLocked), nameof(HasAiSafety), nameof(AiAnalysisText)
+                nameof(IsCritical), nameof(KeepThisLocked), nameof(HasAiSafety),
+                nameof(AiAnalysisText), nameof(AiBadgeText), nameof(AiAnalysisToolTip), nameof(AiBadgeBrush)
             })
             {
                 RaisePropertyChanged(p);
