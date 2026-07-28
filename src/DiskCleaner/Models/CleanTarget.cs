@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using DiskCleaner.Helpers;
 
@@ -21,6 +22,19 @@ namespace DiskCleaner.Models
 
         /// <summary>该类别包含的目录路径列表</summary>
         public ObservableCollection<string> Paths { get; set; } = new ObservableCollection<string>();
+
+        /// <summary>
+        /// 是否系统级垃圾位（如系统临时文件/更新缓存/错误报告/预取/字体/缩略图/DNS）。
+        /// true=可直接永久删除且安全（cleanmgr 也清这些）；false=用户空间数据（如用户临时文件），
+        /// 删除时默认移入保险箱软删除以便恢复。
+        /// </summary>
+        public bool IsSystemSafe { get; set; }
+
+        /// <summary>
+        /// 扫描时缓存的文件列表（路径+大小），清理时直接使用，避免二次枚举。
+        /// 键为文件完整路径，值为扫描时统计的大小。
+        /// </summary>
+        public List<(string FullName, long Size)> ScannedFiles { get; set; } = new List<(string, long)>();
 
         public bool IsSelected
         {

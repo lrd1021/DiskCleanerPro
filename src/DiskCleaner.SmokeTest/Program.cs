@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using DiskCleaner.Services;
+using DiskCleaner.Helpers;
 
 namespace DiskCleaner.SmokeTest
 {
@@ -31,6 +32,8 @@ namespace DiskCleaner.SmokeTest
                 Run("DiskAnalyzer_交接点守卫(不遍历)", DiskAnalyzer_ReparseGuard);
                 Run("DuplicateFinder_重复检测", DuplicateFinder_Detects);
                 Run("TempFileCleaner_默认目标完整", TempFileCleaner_Defaults);
+                Run("DirectDelete_批量永久删除(不进回收站)", DirectDelete_BatchedPermanent);
+                Run("RecycleBin_解析$I索引(v1/v2)", RecycleBin_ParseIndex);
                 Run("SoftwareManager_MsiExec白名单(反射)", SoftwareManager_MsiGuard);
                 Run("SoftwareManager_可信卸载程序(反射)", SoftwareManager_TrustGuard);
                 Run("SoftwareManager_拒绝危险MsiExec(行为)", SoftwareManager_RejectUnsafeMsi);
@@ -171,6 +174,92 @@ namespace DiskCleaner.SmokeTest
             foreach (var expected in new[] { "用户临时文件", "系统临时文件", "Windows 更新缓存" })
                 Assert(names.Contains(expected), $"缺少默认目标: {expected}");
             Console.WriteLine($"        (默认目标 {targets.Count} 项，关键类别齐全)");
+        }
+
+        static void DirectDelete_BatchedPermanent()
+        {
+            // 验证：直接删除分支改用批量 SHFileOperation（permanent 模式）后，文件确实被永久删除、
+            // 失败候选为空、且不依赖逐文件 File.Delete（避免 8 万文件场景卡顿）。
+            var root = Path.Combine(Sandbox, "directdel");
+            Directory.CreateDirectory(root);
+            int n = 1000;
+            var files = new List<string>();
+            var sizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < n; i++)
+            {
+                var p = Path.Combine(root, $"f{i:D4}.tmp");
+                File.WriteAllText(p, new string('x', 16));
+                files.Add(p);
+                sizes[p] = 16;
+            }
+            // 加一个只读锁定的占位：用一个正被打开的文件，验证失败候选逻辑不崩
+            var locked = Path.Combine(root, "locked.tmp");
+            File.WriteAllText(locked, "lock");
+            files.Add(locked);
+            sizes[locked] = 4;
+
+            int progressCalls = 0, batchCalls = 0;
+            var failed = NativeMethods.SendToRecycleBinBatch(files,
+                (proc, tot) => { progressCalls++; },
+                onBatch: (idx, _) => { batchCalls++; },
+                sizes: sizes,
+                permanent: true);
+
+            // 绝大多数文件应被永久删除
+            int stillExist = files.Count(f => f != locked && File.Exists(f));
+            Assert(stillExist == 0, $"应有 {n} 个临时文件被删除，仍有 {stillExist} 个残留");
+            // 进度应按批回传（1000/250 = 4 批 → 至少 4 次进度 + 批次回调）
+            Assert(batchCalls >= 4, $"批次回调应≥4，实际{batchCalls}");
+            Assert(progressCalls >= 4, $"进度回调应≥4，实际{progressCalls}");
+            Console.WriteLine($"        (批量永久删除 {n} 文件全部消失，失败候选={failed.Count}，批次回调={batchCalls})");
+        }
+
+        static void RecycleBin_ParseIndex()
+        {
+            // 验证回收站 $I 索引解析：v1 (Win10 1809 前) 与 v2 (Win10 1809+/Win11) 两种布局，
+            // 含中文路径、损坏文件容错。这是「回收站页列出文件」功能的数据基础。
+            var ft = DateTime.UtcNow.ToFileTimeUtc() - TimeSpan.TicksPerDay;
+
+            long v1Size = 123456L;
+            var p1 = @"C:\Users\test\文件A.txt";
+            var f1 = Path.Combine(Sandbox, "$I" + Guid.NewGuid().ToString("N").Substring(0, 12));
+            File.WriteAllBytes(f1, BuildIndex(1, ft, v1Size, p1));
+            var r1 = RecycleBinManager.ParseIndexFile(f1);
+            Assert(r1 != null, "v1 解析应成功");
+            Assert(r1.OriginalPath == p1, $"v1 原路径应为 [{p1}]，实际 [{r1?.OriginalPath}]");
+            Assert(r1.SizeBytes == v1Size, $"v1 大小应为 {v1Size}，实际 {r1?.SizeBytes}");
+            Assert(r1.DeletedAtUtc.ToFileTimeUtc() == ft, "v1 删除时间应一致");
+    Assert(r1.DataPath != null && r1.DataPath.Replace("$R", "$I") == f1, $"v1 数据路径应配对 $R，实际 [{r1?.DataPath}]");
+
+            long v2Size = 98765L;
+            var p2 = @"D:\data\中文目录\文件B.log";
+            var f2 = Path.Combine(Sandbox, "$I" + Guid.NewGuid().ToString("N").Substring(0, 12));
+            File.WriteAllBytes(f2, BuildIndex(2, ft, v2Size, p2));
+            var r2 = RecycleBinManager.ParseIndexFile(f2);
+            Assert(r2 != null, "v2 解析应成功");
+            Assert(r2.OriginalPath == p2, $"v2 原路径应为 [{p2}]，实际 [{r2?.OriginalPath}]");
+            Assert(r2.SizeBytes == v2Size, $"v2 大小应为 {v2Size}，实际 {r2?.SizeBytes}");
+            Assert(r2.DeletedAtUtc.ToFileTimeUtc() == ft, "v2 删除时间应一致");
+
+            var bad = Path.Combine(Sandbox, "$Ibad");
+            File.WriteAllBytes(bad, new byte[] { 1, 2, 3 });
+            Assert(RecycleBinManager.ParseIndexFile(bad) == null, "损坏索引应返回 null 而非抛异常");
+
+            Console.WriteLine($"        (v1/v2 索引解析正确，含中文路径与损坏容错)");
+        }
+
+        static byte[] BuildIndex(byte version, long fileTime, long size, string path)
+        {
+            using var ms = new MemoryStream();
+            using var bw = new BinaryWriter(ms);
+            bw.Write(new byte[] { version, 0, 0, 0, 0, 0, 0, 0 });
+            bw.Write(size);
+            bw.Write(fileTime);
+            if (version == 2) bw.Write(new byte[] { 0, 0, 0, 0 }); // v2 在路径前有 4 字节属性
+            var pb = System.Text.Encoding.Unicode.GetBytes(path);
+            bw.Write(pb);
+            bw.Write(new byte[] { 0, 0 });
+            return ms.ToArray();
         }
 
         static void SoftwareManager_MsiGuard()
@@ -411,18 +500,41 @@ namespace DiskCleaner.SmokeTest
         {
             try
             {
-                // 用长路径前缀删除，避免深层嵌套超过 MAX_PATH 导致清理失败
-                var delRoot = @"\\?\" + Sandbox;
-                if (Directory.Exists(delRoot))
+                // 清理 %TEMP% 下「所有」DiskCleanerSmoke_* 沙箱（含本次 Sandbox + 历史遗留）：
+                // 沙箱目录名含随机 GUID，每次 `dotnet run` 都生成新 GUID；若只删本次的，
+                // 多次运行会在 %TEMP% 累积成垃圾（曾一次遗留 55 个深嵌套树，污染真实重复文件
+                // 检测扫描并占满 CPU）。这里在每次运行结束时一次性扫净。
+                var temp = Path.GetTempPath();
+                foreach (var d in Directory.GetDirectories(temp, "DiskCleanerSmoke_*"))
                 {
-                    foreach (var j in Directory.GetDirectories(delRoot, "*", SearchOption.AllDirectories))
-                    {
-                        try { if ((File.GetAttributes(j) & FileAttributes.ReparsePoint) != 0) Directory.Delete(j, false); } catch { }
-                    }
-                    Directory.Delete(delRoot, true);
+                    TryDeleteDir(@"\\?\" + d);
                 }
             }
-            catch { /* 清理失败不影响结果 */ }
+            catch { /* 清理失败不影响测试结果 */ }
+        }
+
+        /// <summary>
+        /// 用 PowerShell Remove-Item 递归删除目录（配合 \\?\ 长路径前缀）。
+        /// 实测 .NET Directory.Delete(recursive) 在 2000 层深嵌套 + 超长路径下会失败，
+        /// 而 Remove-Item -Recurse -Force 能正常删除。单个目录删除失败（如被占用）忽略。
+        /// </summary>
+        static void TryDeleteDir(string path)
+        {
+            try
+            {
+                if (!Directory.Exists(path)) return;
+                var psi = new System.Diagnostics.ProcessStartInfo("powershell",
+                    $"-NoProfile -Command \"Remove-Item -LiteralPath '{path}' -Recurse -Force -ErrorAction SilentlyContinue\"")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var p = System.Diagnostics.Process.Start(psi);
+                p?.WaitForExit(120000);
+            }
+            catch { /* 忽略单个目录清理失败 */ }
         }
     }
 }

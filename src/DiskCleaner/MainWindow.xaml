@@ -118,7 +118,7 @@
                 </ScrollViewer>
 
                 <!-- 设置按钮 — 固定在底部 -->
-                <Button Grid.Row="3" Content="⚙️ AI 设置"
+                <Button Grid.Row="3" Content="AI 设置"
                         Style="{StaticResource GhostButton}"
                         HorizontalAlignment="Stretch" Margin="8,8,8,12"
                         Click="BtnSettings_Click" FontSize="13"

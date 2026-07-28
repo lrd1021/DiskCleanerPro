@@ -25,6 +25,7 @@ namespace DiskCleaner
             "重复文件检测",
             "浏览器缓存",
             "回收站清空",
+            "保险箱",
             "文件搬家",
             "软件管理"
         };
@@ -83,6 +84,7 @@ namespace DiskCleaner
             _pages["重复文件检测"] = new DuplicateView { DataContext = new DuplicateViewModel() };
             _pages["浏览器缓存"] = new BrowserCacheView { DataContext = new BrowserCacheViewModel() };
             _pages["回收站清空"] = new RecycleBinView { DataContext = new RecycleBinViewModel() };
+            _pages["保险箱"] = new QuarantineView { DataContext = new QuarantineViewModel() };
             _pages["文件搬家"] = new FileMoveView { DataContext = new FileMoveViewModel() };
             _pages["软件管理"] = new SoftwareView { DataContext = new SoftwareViewModel() };
         }

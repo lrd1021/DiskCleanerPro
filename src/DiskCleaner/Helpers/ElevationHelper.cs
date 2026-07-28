@@ -33,7 +33,7 @@ namespace DiskCleaner.Helpers
             if (string.IsNullOrEmpty(helperPath) || !File.Exists(helperPath))
             {
                 var pathHint = string.IsNullOrEmpty(helperPath) ? "(未知)" : helperPath;
-                MessageBox.Show(
+                MessageBoxHelper.Show(
                     $"未找到 ElevatedHelper 或其未通过完整性校验，无法执行需要管理员权限的操作。\n\n" +
                     $"期望路径：{pathHint}\n\n" +
                     $"请确保 DiskCleaner.Elevated.exe 与主程序位于同一目录；Release 版还需有效的 Authenticode 签名。",
@@ -73,7 +73,7 @@ namespace DiskCleaner.Helpers
             catch (Exception ex)
             {
                 Logger.Error($"启动 ElevatedHelper 失败: {command}", ex);
-                MessageBox.Show($"启动 ElevatedHelper 失败：{ex.Message}",
+                MessageBoxHelper.Show($"启动 ElevatedHelper 失败：{ex.Message}",
                     "DiskCleaner Pro", MessageBoxButton.OK, MessageBoxImage.Error);
                 return 1;
             }

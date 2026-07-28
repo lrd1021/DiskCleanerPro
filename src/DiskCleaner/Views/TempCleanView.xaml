@@ -11,22 +11,21 @@
             <!-- 操作按钮栏 -->
             <DockPanel Margin="0,0,0,20">
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                    <Button Content="🔍 扫描" Command="{Binding ScanCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0"
-                            FontFamily="Segoe UI Emoji, Microsoft YaHei UI, Segoe UI Symbol" />
-                    <Button Content="🧹 清理选中项" Command="{Binding CleanCommand}" Style="{StaticResource DangerButton}" Margin="0,0,10,0"
-                            FontFamily="Segoe UI Emoji, Microsoft YaHei UI, Segoe UI Symbol" />
-                    <Button Content="全选" Command="{Binding SelectAllCommand}" Style="{StaticResource GhostButton}" Margin="0,0,4,0" />
-                    <Button Content="取消" Command="{Binding SelectNoneCommand}" Style="{StaticResource GhostButton}" />
+                    <Button Content="扫描" Command="{Binding ScanCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0" />
+                    <Button Content="清理选中项" Command="{Binding CleanCommand}" Style="{StaticResource DangerButton}" Margin="0,0,10,0" />
+                    <CheckBox Content="全选" IsChecked="{Binding SelectAllChecked, Mode=TwoWay}" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,4,0" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
-                    <CheckBox Content="永久删除（不可恢复）" IsChecked="{Binding PermanentDelete}" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                    <TextBlock Text="默认移入保险箱（可恢复、快）" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <CheckBox Content="改用系统回收站（较慢）" IsChecked="{Binding UseRecycleBin}" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
                 </StackPanel>
             </DockPanel>
 
-            <!-- 进度条 -->
-            <StackPanel Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" Margin="0,0,0,16">
+            <!-- 进度条（扫描或清理时均显示） -->
+            <StackPanel Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" Margin="0,0,0,16">
                 <ProgressBar Value="{Binding Progress}" Maximum="100" Height="6" Foreground="{StaticResource AccentBrush}" />
                 <TextBlock Text="{Binding ProgressText}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,6,0,0" />
+                <Button Content="停止" Command="{Binding CancelCommand}" Style="{StaticResource DangerButton}" HorizontalAlignment="Left" Margin="0,8,0,0" />
             </StackPanel>
 
             <!-- 统计卡片 -->
@@ -58,8 +57,23 @@
                         <Border Background="{StaticResource CardBrush}" CornerRadius="8" Padding="16,12" Margin="0,0,0,8">
                             <DockPanel>
                                 <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center" Margin="0,0,12,0" />
-                                <TextBlock Text="{Binding Icon}" FontSize="24" VerticalAlignment="Center" Margin="0,0,12,0"
-                                           FontFamily="Segoe UI Emoji, Microsoft YaHei UI, Segoe UI Symbol" />
+                                <Button Click="OpenLocation_Click" Cursor="Hand"
+                                        Width="28" Height="24" Margin="0,0,10,0" ToolTip="在资源管理器中打开该类别所在目录">
+                                    <TextBlock Text="📂" FontSize="13" />
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderThickness" Value="0" />
+                                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                                    <Setter Property="Background" Value="#22FFFFFF" />
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
                                 <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
                                     <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" Foreground="White" />
                                     <TextBlock Text="{Binding Description}" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0" />

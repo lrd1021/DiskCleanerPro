@@ -172,7 +172,7 @@ namespace DiskCleaner.Services
                 if (!isMsi && !File.Exists(resolvedFile))
                 {
                     OnProgress?.Invoke(100, $"找不到卸载程序：{resolvedFile}");
-                    System.Windows.MessageBox.Show(
+                    MessageBoxHelper.Show(
                         $"找不到卸载程序：\n\n{resolvedFile}\n\n该软件可能已被卸载，或注册表中的卸载路径已失效。建议从软件列表中移除该项。",
                         "无法卸载 — DiskCleaner Pro",
                         System.Windows.MessageBoxButton.OK,

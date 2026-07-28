@@ -11,10 +11,11 @@
 
                 <DockPanel Margin="0,16,0,0">
                     <StackPanel Orientation="Horizontal">
-                        <Button Content="🔍 开始检测" Command="{Binding ScanCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0" />
-                        <Button Content="🗑️ 清理选中" Command="{Binding CleanCommand}" Style="{StaticResource DangerButton}" Margin="0,0,10,0" />
+                        <Button Content="开始检测" Command="{Binding ScanCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0" />
+                        <Button Content="清理选中" Command="{Binding CleanCommand}" Style="{StaticResource DangerButton}" Margin="0,0,10,0" />
                         <Button Content="全选" Command="{Binding SelectAllCommand}" Style="{StaticResource GhostButton}" Margin="0,0,10,0" />
-                        <Button Content="🤖 AI 分析" Command="{Binding AIAnalyzeCommand}" Style="{StaticResource SecondaryButton}" Margin="0,0,10,0" />
+                        <Button Content="取消全选" Command="{Binding DeselectAllCommand}" Style="{StaticResource GhostButton}" Margin="0,0,10,0" />
+                        <Button Content="AI 分析" Command="{Binding AIAnalyzeCommand}" Style="{StaticResource SecondaryButton}" Margin="0,0,10,0" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
                         <TextBlock Text="扫描目录：" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
@@ -37,61 +38,175 @@
                 </DockPanel>
 
                 <StackPanel Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" Margin="0,12,0,0">
-                    <ProgressBar Value="{Binding Progress}" Maximum="100" Height="6" Foreground="{StaticResource AccentBrush}" />
-                    <TextBlock Text="{Binding ProgressText}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,6,0,0" />
+                    <!-- 进度条：始终确定进度（不在收集阶段用“来回滚动”的不确定动画）；收集阶段由 DuplicateFinder 传入软曲线进度值，阶段A/B 为真实百分比，全程单调不回退 -->
+                    <ProgressBar Value="{Binding Progress}" Maximum="100" Height="12" Background="#22FFFFFF" Foreground="{StaticResource AccentBrush}" BorderThickness="0" />
+                    <TextBlock Text="{Binding ProgressText}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,8,0,0" />
+
+                    <!-- 扫描中实时面板：顶部一行汇总（已发现重复组 / 预估可释放），下方“正在扫描的目录”列表实时滚动当前目录路径 -->
+                    <Border Background="{StaticResource CardBrush}" CornerRadius="8" Padding="16" Margin="0,16,0,0">
+                        <DockPanel>
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,10">
+                                <TextBlock Text="已发现重复组：" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" />
+                                <TextBlock Text="{Binding LiveGroupCount, Mode=OneWay}" Foreground="{StaticResource AccentBrush}" FontSize="15" FontWeight="Bold" Margin="4,0,20,0" />
+                                <TextBlock Text="预估可释放：" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" />
+                                <TextBlock Text="{Binding TotalWasteDisplay}" Foreground="{StaticResource DangerBrush}" FontSize="15" FontWeight="Bold" />
+                            </StackPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="正在扫描的目录：" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,4" />
+                            <ListBox ItemsSource="{Binding ScanLog}"
+                                     Background="#242424" BorderThickness="0"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     VirtualizingStackPanel.IsVirtualizing="True"
+                                     VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                     Height="220">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Padding" Value="3,1" />
+                                        <Setter Property="Margin" Value="0" />
+                                        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                        <Setter Property="FontSize" Value="11" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <ContentPresenter />
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                            </ListBox>
+                        </DockPanel>
+                    </Border>
                 </StackPanel>
             </StackPanel>
         </Border>
 
-        <!-- 重复文件列表 -->
-        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="32,0,32,28">
-            <ItemsControl ItemsSource="{Binding Groups}">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <Border Background="{StaticResource CardBrush}" CornerRadius="8" Padding="16" Margin="0,0,0,12">
-                            <StackPanel>
-                                <DockPanel>
-                                    <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center" Margin="0,0,12,0" />
-                                    <StackPanel>
-                                        <TextBlock Foreground="White" FontSize="14">
-                                            <Run Text="重复组：" />
-                                            <Run Text="{Binding Count, Mode=OneWay}" FontWeight="Bold" />
-                                            <Run Text=" 个文件，每个 " />
-                                            <Run Text="{Binding SizeDisplay, Mode=OneWay}" Foreground="{StaticResource AccentBrush}" />
-                                        </TextBlock>
-                                        <TextBlock Text="{Binding Hash}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" Margin="0,2,0,0" />
-                                    </StackPanel>
-                                    <Border DockPanel.Dock="Right" HorizontalAlignment="Right" Background="#3D2D2D" CornerRadius="4" Padding="12,4">
-                                        <TextBlock>
-                                            <Run Text="可释放 " Foreground="{StaticResource TextSecondaryBrush}" />
-                                            <Run Text="{Binding WasteDisplay, Mode=OneWay}" Foreground="{StaticResource DangerBrush}" FontWeight="Bold" />
-                                        </TextBlock>
-                                    </Border>
-                                </DockPanel>
+        <!-- 重复文件列表
+             关键修复：外层改用开启 UI 虚拟化的 ListBox（VirtualizingStackPanel + ScrollViewer.CanContentScroll=True）。
+             原实现是裸 ScrollViewer 包 ItemsControl，ItemsControl 默认不虚拟化，会把“全部重复组 × 组内全部文件”
+             （可达数万~数十万个元素）一次性全部建成可视树常驻内存。窗口拖动/缩放时 WPF 要对整棵树
+             重新 Measure/Arrange，元素过多即表现为严重卡顿。虚拟化的 ListBox 只构建当前可见的少数几个组的元素，
+             离屏组不进可视树，拖动/缩放开销从“与结果总数成正比”降到“与可见项数成正比”。 -->
+        <ListBox ItemsSource="{Binding Groups}"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 Margin="32,0,32,28"
+                 ScrollViewer.CanContentScroll="True"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 VirtualizingStackPanel.IsVirtualizing="True"
+                 VirtualizingStackPanel.VirtualizationMode="Recycling">
+            <ListBox.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <VirtualizingStackPanel />
+                </ItemsPanelTemplate>
+            </ListBox.ItemsPanel>
+            <ListBox.ItemContainerStyle>
+                <!-- 去掉 ListBoxItem 默认的选中高亮/内边距，让内容直接铺满，保持原卡片视觉效果 -->
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="VerticalContentAlignment" Value="Top" />
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="Margin" Value="0,0,0,12" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListBoxItem">
+                                <ContentPresenter />
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Border Background="{StaticResource CardBrush}" CornerRadius="8" Padding="16">
+                        <StackPanel>
+                            <DockPanel>
+                                <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="勾选后本组会被纳入清理；组内勾选「保留」的文件留下，未勾选的副本删除（可保留多个）" />
+                                <StackPanel>
+                                    <TextBlock Foreground="White" FontSize="14">
+                                        <Run Text="重复组：" />
+                                        <Run Text="{Binding Count, Mode=OneWay}" FontWeight="Bold" />
+                                        <Run Text=" 个文件，每个 " />
+                                        <Run Text="{Binding SizeDisplay, Mode=OneWay}" Foreground="{StaticResource AccentBrush}" />
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding Hash}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <Border DockPanel.Dock="Right" HorizontalAlignment="Right" Background="#3D2D2D" CornerRadius="4" Padding="12,4">
+                                    <TextBlock>
+                                        <Run Text="可释放 " Foreground="{StaticResource TextSecondaryBrush}" />
+                                        <Run Text="{Binding WasteDisplay, Mode=OneWay}" Foreground="{StaticResource DangerBrush}" FontWeight="Bold" />
+                                    </TextBlock>
+                                </Border>
+                            </DockPanel>
 
-                                <ItemsControl ItemsSource="{Binding Files}" Margin="24,8,0,0">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <DockPanel Margin="0,4">
-                                                <RadioButton IsChecked="{Binding KeepThis}" GroupName="{Binding FilePath}" VerticalAlignment="Center" Margin="0,0,8,0" Content="保留" Foreground="{StaticResource SuccessBrush}" />
-                                                <TextBlock Text="{Binding SafetyIcon}" FontSize="14" VerticalAlignment="Center" Margin="0,0,4,0" ToolTip="{Binding SafetyTooltip}" />
-                                                <TextBlock VerticalAlignment="Center">
-                                                    <Run Text="📄 " />
-                                                    <Run Text="{Binding FileName, Mode=OneWay}" Foreground="White" />
-                                                    <Run Text="  " />
-                                                    <Run Text="{Binding Directory, Mode=OneWay}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" />
-                                                    <Run Text="  " />
-                                                    <Run Text="{Binding LastModified, Mode=OneWay}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" />
-                                                </TextBlock>
-                                            </DockPanel>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
+                            <!-- 组级安全警告：本组含被锁定保留的系统/程序必需文件时显示 -->
+                            <TextBlock Text="{Binding CriticalWarning}" Foreground="{StaticResource DangerBrush}" FontSize="12"
+                                       Margin="24,6,0,0" Visibility="{Binding ContainsCritical, Converter={StaticResource BoolToVis}}" />
+
+                            <!-- 组内文件列表：默认展开。典型组文件数不大（几十），可见组内不虚拟化也可接受；
+                                 若担心超大组（上千文件）单组卡顿，可后续改为可折叠 + 内层虚拟化 ListBox。 -->
+                            <ItemsControl ItemsSource="{Binding Files}" Margin="24,8,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,4">
+                                            <Button DockPanel.Dock="Left" Click="OpenLocation_Click" Cursor="Hand"
+                                                    Width="28" Height="24" Margin="0,0,6,0" ToolTip="在资源管理器中打开位置">
+                                                <TextBlock Text="📂" FontSize="13" />
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Background" Value="Transparent" />
+                                                        <Setter Property="BorderThickness" Value="0" />
+                                                        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                                        <Style.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                                                <Setter Property="Background" Value="#22FFFFFF" />
+                                                            </Trigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                            <!-- 保留/删除一目了然——勾选「保留」(绿)的行留下，未勾选(红，显示「删除」)的副本被清理；支持同组保留多个或全部保留 -->
+                                            <!-- 关键文件（系统/程序必需）IsCritical 时 KeepThisLocked=True：复选框禁用，强制执行保留，不可取消 -->
+                                            <CheckBox IsChecked="{Binding KeepThis}" VerticalAlignment="Center" Margin="0,0,8,0">
+                                                <CheckBox.Style>
+                                                    <Style TargetType="CheckBox">
+                                                        <Setter Property="Content" Value="删除" />
+                                                        <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                                        <Style.Triggers>
+                                                            <Trigger Property="IsChecked" Value="True">
+                                                                <Setter Property="Content" Value="保留" />
+                                                                <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                                            </Trigger>
+                                                            <DataTrigger Binding="{Binding KeepThisLocked}" Value="True">
+                                                                <Setter Property="IsEnabled" Value="False" />
+                                                                <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </CheckBox.Style>
+                                            </CheckBox>
+                                            <TextBlock Text="🔒 系统/程序必需，已自动保留"
+                                                       Foreground="{StaticResource DangerBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                                                       Visibility="{Binding KeepThisLocked, Converter={StaticResource BoolToVis}}" />
+                                            <TextBlock Text="{Binding SafetyIcon}" FontSize="14" VerticalAlignment="Center" Margin="0,0,4,0" ToolTip="{Binding SafetyTooltip}" Foreground="{Binding SafetyIconBrush}" />
+                                            <TextBlock VerticalAlignment="Center">
+                                                <Run Text="{Binding FileName, Mode=OneWay}" Foreground="White" />
+                                                <Run Text="  " />
+                                                <Run Text="{Binding Directory, Mode=OneWay}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" />
+                                                <Run Text="  " />
+                                                <Run Text="{Binding LastModified, Mode=OneWay}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" />
+                                            </TextBlock>
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
     </DockPanel>
 </UserControl>

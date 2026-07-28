@@ -18,6 +18,10 @@ namespace DiskCleaner.Services
     {
         public Action<int, string> OnProgress { get; set; }
 
+        // 单个目录下最多直接展示多少个子目录；超过时只保留最大的若干，并加一个占位节点。
+        // 避免 WeGame/Steam 等巨型目录下 TreeView 一次性渲染过多节点导致点击展开卡死。
+        private const int MaxDirectChildren = 200;
+
         // 跳过这些系统目录（无意义且极慢）
         private static readonly HashSet<string> SkipDirs = NativeMethods.ProtectedDirectories;
 
@@ -123,15 +127,9 @@ namespace DiskCleaner.Services
                                 }
                                 else
                                 {
+                                    // 磁盘空间分析只聚合文件大小，不创建文件节点——避免游戏/缓存目录
+                                    // 含数万小文件时 TreeView 一次性渲染卡死（R12 后续优化）。
                                     frame.FileSizeSum += e.Size;
-                                    frame.Children.Add(new FileNode
-                                    {
-                                        Name = e.Name,
-                                        FullPath = Path.Combine(dirPath, e.Name),
-                                        IsDirectory = false,
-                                        SizeBytes = e.Size,
-                                        Extension = Path.GetExtension(e.Name)
-                                    });
                                     totalFiles++;
                                     if (totalFiles % 5000 == 0)
                                         OnProgress?.Invoke(-1, $"正在扫描 {frame.Node.Name}... ({FileSizeFormatter.Format(frame.FileSizeSum)})");
@@ -198,6 +196,24 @@ namespace DiskCleaner.Services
             if (frame.Node.IsDirectory)
                 frame.Node.LastModified = SafeGetLastModified(frame.Node.FullPath);
             frame.Children.Sort((a, b) => b.SizeBytes.CompareTo(a.SizeBytes));
+
+            // 限制单目录直接子节点数，避免 UI 卡死
+            if (frame.Children.Count > MaxDirectChildren)
+            {
+                var kept = frame.Children.Take(MaxDirectChildren).ToList();
+                var omitted = frame.Children.Count - MaxDirectChildren;
+                var omittedSize = frame.Children.Skip(MaxDirectChildren).Sum(n => n.SizeBytes);
+                kept.Add(new FileNode
+                {
+                    Name = $"… 还有 {omitted} 个目录未显示（共 {FileSizeFormatter.Format(omittedSize)}）",
+                    FullPath = frame.Node.FullPath,
+                    IsDirectory = true,
+                    SizeBytes = omittedSize,
+                    Children = new ObservableCollection<FileNode>()
+                });
+                frame.Children = kept;
+            }
+
             // 一次性赋给 OC（后台构建期不再触发 CollectionChanged 通知）
             frame.Node.Children = new ObservableCollection<FileNode>(frame.Children);
         }

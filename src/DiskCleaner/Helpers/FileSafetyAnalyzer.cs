@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Windows.Media;
 
 namespace DiskCleaner.Helpers
 {
@@ -21,6 +22,17 @@ namespace DiskCleaner.Helpers
     /// </summary>
     public class FileSafetyInfo
     {
+        private static readonly Brush SafeBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x4A, 0xDE, 0x80)));
+        private static readonly Brush CautionBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFA, 0xCC, 0x15)));
+        private static readonly Brush DangerBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)));
+        private static readonly Brush UnknownBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x6C, 0xB6, 0xFF)));
+
+        private static Brush Freeze(SolidColorBrush brush)
+        {
+            brush.Freeze();
+            return brush;
+        }
+
         public FileSafetyLevel Level { get; set; }
         public string Description { get; set; } = "";
         public string Reason { get; set; } = "";
@@ -32,6 +44,14 @@ namespace DiskCleaner.Helpers
             FileSafetyLevel.Caution => "⚠️",
             FileSafetyLevel.Danger => "🚫",
             _ => "❓"
+        };
+
+        public Brush IconBrush => Level switch
+        {
+            FileSafetyLevel.Safe => SafeBrush,
+            FileSafetyLevel.Caution => CautionBrush,
+            FileSafetyLevel.Danger => DangerBrush,
+            _ => UnknownBrush
         };
 
         public string LevelText => Level switch
@@ -54,7 +74,8 @@ namespace DiskCleaner.Helpers
         {
             @"\Windows\", @"\Program Files\", @"\Program Files (x86)\",
             @"\ProgramData\Microsoft\", @"\System32\", @"\SysWOW64\",
-            @"\drivers\", @"\Boot\"
+            @"\drivers\", @"\Boot\",
+            @"\dotnet\shared\"           // .NET 共享运行时（PresentationFramework.dll 等），供多个程序共用
         };
 
         // 明确安全的目录（临时/缓存类）
@@ -183,9 +204,11 @@ namespace DiskCleaner.Helpers
             }
 
             // 2. 路径上下文分析 — 保护关键目录
+            // 注意：ProtectedPaths 片段形如 "\Windows\"，而 dir 是完整路径 "C:\Windows\..."；
+            // 不能用 StartsWith（会漏匹配），改为规范化末尾加 '\' 后 IndexOf 判定。
             foreach (var p in ProtectedPaths)
             {
-                if (dir.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+                if (DirContainsSegment(dir, p))
                 {
                     info.Level = FileSafetyLevel.Danger;
                     info.Description = ExtDatabase.TryGetValue(ext, out var e) ? e.Desc : "位于系统关键目录";
@@ -255,7 +278,7 @@ namespace DiskCleaner.Helpers
             // 系统关键目录
             foreach (var p in ProtectedPaths)
             {
-                if (dirPath.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+                if (DirContainsSegment(dirPath, p))
                 {
                     return new FileSafetyInfo
                     {
@@ -311,6 +334,18 @@ namespace DiskCleaner.Helpers
         {
             var parts = path.Trim('\\').Split('\\');
             return parts.Length >= 2 ? $"{parts[parts.Length - 2]}\\{parts.Last()}" : parts.Last();
+        }
+
+        /// <summary>
+        /// 判断完整目录路径是否包含某个受保护目录片段（如 "\Windows\"）。
+        /// ProtectedPaths 片段以反斜杠包裹（"\Windows\"），而传入的 dir 是完整路径 "C:\Windows\..."，
+        /// 必须先把 dir 末尾补上反斜杠再做 IndexOf，否则 StartsWith 对带盘符的路径匹配不上。
+        /// </summary>
+        private static bool DirContainsSegment(string dirPath, string segment)
+        {
+            if (string.IsNullOrEmpty(dirPath)) return false;
+            var norm = dirPath.EndsWith("\\") ? dirPath : dirPath + "\\";
+            return norm.IndexOf(segment, StringComparison.OrdinalIgnoreCase) >= 0;
         }
     }
 }

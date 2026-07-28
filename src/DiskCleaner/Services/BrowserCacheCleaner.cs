@@ -38,7 +38,7 @@ namespace DiskCleaner.Services
                 browsers.Add(new BrowserInfo
                 {
                     Name = "Google Chrome",
-                    Icon = "🌐",
+                    Icon = "",
                     Profiles = GetChromeProfiles(chromePath),
                     CacheDirs = new[] { "Cache", "Code Cache", "GPUCache", @"Service Worker\CacheStorage" }
                 });
@@ -51,7 +51,7 @@ namespace DiskCleaner.Services
                 browsers.Add(new BrowserInfo
                 {
                     Name = "Microsoft Edge",
-                    Icon = "🌐",
+                    Icon = "",
                     Profiles = GetChromeProfiles(edgePath),
                     CacheDirs = new[] { "Cache", "Code Cache", "GPUCache", @"Service Worker\CacheStorage" }
                 });
@@ -68,7 +68,7 @@ namespace DiskCleaner.Services
                     browsers.Add(new BrowserInfo
                     {
                         Name = "Mozilla Firefox",
-                        Icon = "🦊",
+                        Icon = "",
                         Profiles = profiles,
                         CacheDirs = new[] { "cache2" }
                     });
@@ -123,10 +123,10 @@ namespace DiskCleaner.Services
         }
 
         /// <summary>
-        /// 清理浏览器缓存
+        /// 清理浏览器缓存。useRecycleBin=true 走系统回收站；否则默认移入保险箱软删除（可恢复、不黑屏）。
         /// </summary>
         public async Task<(long freed, int deleted)> CleanAsync(
-            List<BrowserInfo> browsers, bool permanent, CancellationToken ct = default)
+            List<BrowserInfo> browsers, bool useRecycleBin, CancellationToken ct = default)
         {
             long totalFreed = 0;
             int totalDeleted = 0;
@@ -143,8 +143,8 @@ namespace DiskCleaner.Services
                         var cachePath = Path.Combine(profile, cacheDir);
                         if (!Directory.Exists(cachePath)) continue;
 
-                        var (freed, deleted) = await Task.Run(() =>
-                            DeleteCacheContents(cachePath, permanent, ct), ct);
+            var (freed, deleted) = await Task.Run(() =>
+                DeleteCacheContents(cachePath, useRecycleBin, browser.Name, ct), ct);
                         totalFreed += freed;
                         totalDeleted += deleted;
                     }
@@ -155,14 +155,14 @@ namespace DiskCleaner.Services
             return (totalFreed, totalDeleted);
         }
 
-        private (long freed, int deleted) DeleteCacheContents(string path, bool permanent, CancellationToken ct)
+        private (long freed, int deleted) DeleteCacheContents(string path, bool useRecycleBin, string browserName, CancellationToken ct)
         {
             long freed = 0;
             int deleted = 0;
             if (!Directory.Exists(path)) return (0, 0);
 
-            // 永久删除受保护目录时，整体走 ElevatedHelper
-            if (permanent && ElevationHelper.IsProtectedPath(path))
+            // 保险箱模式删除受保护目录时，整体走 ElevatedHelper（避免 asInvoker 下逐个文件失败）
+            if (!useRecycleBin && ElevationHelper.IsProtectedPath(path))
             {
                 long size = 0;
                 try
@@ -182,37 +182,61 @@ namespace DiskCleaner.Services
                 return (0, 0);
             }
 
-            var files = SafeGetAllFiles(path);
-            foreach (var file in files)
+            var files = SafeGetAllFiles(path).ToList();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long lastReported = 0;
+            var recycledPaths = new List<string>();
+            for (int i = 0; i < files.Count; i++)
             {
+                var file = files[i];
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    var fi = new FileInfo(file);
-                    long size = fi.Length;
-
-                    if (permanent)
+                    if (useRecycleBin)
                     {
-                        fi.Delete();
+                        // 走回收站（必须在 UI 线程执行才能保证 FOF_ALLOWUNDO 进回收站）；
+                        // 先收集路径，循环结束统一批量删除，避免逐文件切线程。
+                        recycledPaths.Add(file);
                     }
                     else
                     {
-                        // 走回收站；失败则跳过，不静默永久删除
-                        if (!NativeMethods.SendToRecycleBin(file, out var err))
-                        {
-                            Logger.Warning($"回收站删除失败 [{file}]: 0x{err:X}");
-                            continue;
-                        }
+                        // 默认走"保险箱"软删除（可恢复、不黑屏）；软删失败 best-effort 回退 File.Delete。
+                        QuarantineService.MoveToQuarantine(file, out long size);
+                        if (!File.Exists(file)) { freed += size; deleted++; }
                     }
-
-                    freed += size;
-                    deleted++;
                 }
                 catch (IOException) { } catch (UnauthorizedAccessException) { }
+
+                bool byCount = (i & 0x3FF) == 0;
+                bool byTime = sw.ElapsedMilliseconds - lastReported >= 500;
+                if (byCount || byTime || i == files.Count - 1)
+                {
+                    lastReported = sw.ElapsedMilliseconds;
+                    string eta = "";
+                    if (i > 0 && sw.Elapsed.TotalSeconds > 0.5 && i < files.Count - 1)
+                    {
+                        double remain = sw.Elapsed.TotalSeconds * (files.Count - i - 1) / (i + 1);
+                        if (remain < 60) eta = $"，约剩 {remain:F0} 秒";
+                        else if (remain < 3600) eta = $"，约剩 {(int)(remain / 60)} 分 {(int)(remain % 60)} 秒";
+                        else eta = $"，约剩 {(int)(remain / 3600)} 小时 {(int)((remain % 3600) / 60)} 分";
+                    }
+                OnProgress?.Invoke((int)((double)(i + 1) / files.Count * 100), $"正在{(useRecycleBin ? "移入回收站" : "移入保险箱")}：{i + 1}/{files.Count} 个文件{eta}");
             }
 
-            // 清理空目录（仅永久删除模式）；不跟随交接点，避免误删其目标目录
-            if (permanent)
+            if (useRecycleBin && recycledPaths.Count > 0)
+            {
+                var failed = NativeMethods.SendToRecycleBinOnUIThread(recycledPaths,
+                    (p, t) => OnProgress?.Invoke((int)((double)p / t * 100), $"正在移入回收站：{p}/{t}"),
+                    batchSize: 250, maxBatchBytes: 200L * 1024 * 1024);
+                var stillExist = new HashSet<string>(failed.Where(File.Exists));
+                foreach (var f in recycledPaths)
+                    if (!stillExist.Contains(f)) { freed += new FileInfo(f).Length; deleted++; }
+                RecycleBinManager.SourceTracker.Record(recycledPaths, browserName);
+            }
+            }
+
+            // 清理空目录（仅保险箱模式）；不跟随交接点，避免误删其目标目录
+            if (!useRecycleBin)
             {
                 try
                 {

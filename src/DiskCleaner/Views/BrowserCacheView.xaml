@@ -9,15 +9,19 @@
 
             <DockPanel Margin="0,0,0,20">
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                    <Button Content="🔍 扫描" Command="{Binding ScanCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0" />
-                    <Button Content="🧹 清理选中" Command="{Binding CleanCommand}" Style="{StaticResource DangerButton}" Margin="0,0,10,0" />
+                    <Button Content="扫描" Command="{Binding ScanCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0" />
+                    <Button Content="清理选中" Command="{Binding CleanCommand}" Style="{StaticResource DangerButton}" Margin="0,0,10,0" />
                 </StackPanel>
-                <CheckBox Content="永久删除" IsChecked="{Binding PermanentDelete}" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" DockPanel.Dock="Right" HorizontalAlignment="Right" />
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock Text="默认移入保险箱（可恢复、快）" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <CheckBox Content="改用系统回收站（较慢）" IsChecked="{Binding UseRecycleBin}" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                </StackPanel>
             </DockPanel>
 
-            <StackPanel Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" Margin="0,0,0,16">
+            <StackPanel Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" Margin="0,0,0,16">
                 <ProgressBar Value="{Binding Progress}" Maximum="100" Height="6" Foreground="{StaticResource AccentBrush}" />
                 <TextBlock Text="{Binding ProgressText}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,6,0,0" />
+                <Button Content="停止" Command="{Binding CancelCommand}" Style="{StaticResource DangerButton}" HorizontalAlignment="Left" Margin="0,8,0,0" />
             </StackPanel>
 
             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,20">
@@ -46,9 +50,9 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
 
-            <Border Background="#2D2D3F" CornerRadius="8" Padding="16" Margin="0,16,0,0">
+            <Border Background="#2D2D2D" CornerRadius="8" Padding="16" Margin="0,16,0,0">
                 <StackPanel>
-                    <TextBlock Text="💡 提示" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock Text="提示" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" />
                     <TextBlock Text="1. 清理前请关闭对应的浏览器，否则部分缓存文件被占用无法删除。&#x0a;2. 清理缓存不影响您的密码、书签和历史记录。&#x0a;3. 缓存会在后续使用中自动重新生成，首次访问网页可能略慢。" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,6,0,0" TextWrapping="Wrap" />
                 </StackPanel>
             </Border>

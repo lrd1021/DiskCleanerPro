@@ -2,10 +2,11 @@
 [Bb]in/
 [Oo]bj/
 
-# === 自包含发布产物（可通过 dotnet publish 重新生成，约 160MB，不入库）===
+# === 自包含发布产物（可通过 dotnet publish 重新生成，约 160MB/个，不入库）===
+# publish_fix 为当前正式产物目录（磁盘保留，仅不入库）；其余历史迭代目录一律忽略
 publish/
-publish-preview/
-publish-debug/
+publish-*/
+publish_*/
 
 # === 密钥 / 证书私钥（含私钥的 PFX、PEM 私钥等，严禁入库）===
 *.pfx

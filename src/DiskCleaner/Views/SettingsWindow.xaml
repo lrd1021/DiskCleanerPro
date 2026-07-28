@@ -6,7 +6,7 @@
         Background="{StaticResource BackgroundBrush}"
         ResizeMode="NoResize">
     <StackPanel Margin="32,32">
-        <TextBlock Text="⚙️ AI 文件分析" FontSize="24" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,4" />
+        <TextBlock Text="AI 文件分析" FontSize="24" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,4" />
         <TextBlock Text="选择 AI 提供商，填写 API Key，即可批量分析文件" FontSize="13" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,24" />
 
         <!-- 提供商选择 -->

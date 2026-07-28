@@ -18,7 +18,7 @@ namespace DiskCleaner.ViewModels
         private string _progressText;
         private long _totalCache;
         private string _resultMessage;
-        private bool _permanentDelete;
+        private bool _useRecycleBin;
         private CancellationTokenSource _cts;
 
         public ObservableCollection<BrowserInfo> Browsers
@@ -30,14 +30,17 @@ namespace DiskCleaner.ViewModels
         public bool IsScanning
         {
             get => _isScanning;
-            set => Set(ref _isScanning, value);
+            set { Set(ref _isScanning, value); OnPropertyChanged(nameof(IsBusy)); }
         }
 
         public bool IsCleaning
         {
             get => _isCleaning;
-            set => Set(ref _isCleaning, value);
+            set { Set(ref _isCleaning, value); OnPropertyChanged(nameof(IsBusy)); }
         }
+
+        /// <summary>扫描或清理进行中（用于显示进度区）</summary>
+        public bool IsBusy => IsScanning || IsCleaning;
 
         public int Progress
         {
@@ -69,10 +72,14 @@ namespace DiskCleaner.ViewModels
             set => Set(ref _resultMessage, value);
         }
 
-        public bool PermanentDelete
+        /// <summary>
+        /// 分类删除策略：浏览器缓存默认移入「保险箱」软删除（QuarantineService，速度快、不触发桌面外壳刷新/黑屏、可恢复）。
+        /// 勾选「移入系统回收站」后改为走系统回收站（SHFileOperation），代价是极慢且可能拖垮 Explorer。
+        /// </summary>
+        public bool UseRecycleBin
         {
-            get => _permanentDelete;
-            set => Set(ref _permanentDelete, value);
+            get => _useRecycleBin;
+            set => Set(ref _useRecycleBin, value);
         }
 
         public ICommand ScanCommand { get; }
@@ -154,7 +161,9 @@ namespace DiskCleaner.ViewModels
             var confirm = MessageBox.Show(
                 $"即将清理 {FileSizeFormatter.Format(totalSelected)} 的浏览器缓存。\n\n" +
                 "建议先关闭正在运行的浏览器，否则部分缓存文件可能被占用无法删除。\n\n" +
-                (PermanentDelete ? "⚠️ 永久删除不可恢复！" : "文件将移至回收站。") +
+                (UseRecycleBin
+                    ? "文件将移至系统回收站，可恢复（速度较慢，大量文件时可能拖慢资源管理器）。"
+                    : "浏览器缓存将移入 DiskCleaner 保险箱，可随时从『保险箱』页恢复，速度更快且不触发桌面刷新。") +
                 "\n\n确认继续？",
                 "清理确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
 
@@ -168,8 +177,10 @@ namespace DiskCleaner.ViewModels
             try
             {
                 var (freed, deleted) = await _cleaner.CleanAsync(
-                    new System.Collections.Generic.List<BrowserInfo>(Browsers), PermanentDelete, _cts.Token);
-                ResultMessage = $"清理完成！释放 {FileSizeFormatter.Format(freed)}，删除 {deleted} 个文件";
+                    new System.Collections.Generic.List<BrowserInfo>(Browsers), UseRecycleBin, _cts.Token);
+                ResultMessage = UseRecycleBin
+                    ? $"清理完成！释放 {FileSizeFormatter.Format(freed)}，{deleted} 个文件已移入回收站"
+                    : $"清理完成！释放 {FileSizeFormatter.Format(freed)}，{deleted} 个文件已移入保险箱（可在『保险箱』页恢复）";
 
                 TotalCache = 0;
                 foreach (var b in Browsers)

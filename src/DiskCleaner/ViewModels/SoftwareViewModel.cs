@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -21,6 +23,8 @@ namespace DiskCleaner.ViewModels
         private string _resultMessage;
         private SoftwareInfo _selectedSoftware;
         private CancellationTokenSource _cts;
+        private string _currentSortColumnHeader = "软件名称";
+        private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
 
         public ObservableCollection<SoftwareInfo> SoftwareList
         {
@@ -72,6 +76,18 @@ namespace DiskCleaner.ViewModels
         {
             get => _selectedSoftware;
             set => Set(ref _selectedSoftware, value);
+        }
+
+        public string CurrentSortColumnHeader
+        {
+            get => _currentSortColumnHeader;
+            set => Set(ref _currentSortColumnHeader, value);
+        }
+
+        public ListSortDirection CurrentSortDirection
+        {
+            get => _currentSortDirection;
+            set => Set(ref _currentSortDirection, value);
         }
 
         public ICommand LoadCommand { get; }
@@ -146,13 +162,61 @@ namespace DiskCleaner.ViewModels
                 }
                 FilteredSoftware = filtered;
             }
+            ApplySort();
+        }
+
+        public void Sort(string columnHeader)
+        {
+            if (CurrentSortColumnHeader == columnHeader)
+                CurrentSortDirection = CurrentSortDirection == ListSortDirection.Ascending
+                    ? ListSortDirection.Descending
+                    : ListSortDirection.Ascending;
+            else
+            {
+                CurrentSortColumnHeader = columnHeader;
+                CurrentSortDirection = ListSortDirection.Ascending;
+            }
+            ApplySort();
+        }
+
+        private void ApplySort()
+        {
+            if (FilteredSoftware == null || string.IsNullOrEmpty(CurrentSortColumnHeader)) return;
+
+            IOrderedEnumerable<SoftwareInfo> ordered;
+            switch (CurrentSortColumnHeader)
+            {
+                case "软件名称":
+                    ordered = CurrentSortDirection == ListSortDirection.Ascending
+                        ? FilteredSoftware.OrderBy(s => s.Name)
+                        : FilteredSoftware.OrderByDescending(s => s.Name);
+                    break;
+                case "发布者":
+                    ordered = CurrentSortDirection == ListSortDirection.Ascending
+                        ? FilteredSoftware.OrderBy(s => s.Publisher)
+                        : FilteredSoftware.OrderByDescending(s => s.Publisher);
+                    break;
+                case "版本":
+                    ordered = CurrentSortDirection == ListSortDirection.Ascending
+                        ? FilteredSoftware.OrderBy(s => s.Version)
+                        : FilteredSoftware.OrderByDescending(s => s.Version);
+                    break;
+                case "大小":
+                    ordered = CurrentSortDirection == ListSortDirection.Ascending
+                        ? FilteredSoftware.OrderBy(s => s.EstimatedSizeKB)
+                        : FilteredSoftware.OrderByDescending(s => s.EstimatedSizeKB);
+                    break;
+                default:
+                    return;
+            }
+            FilteredSoftware = new ObservableCollection<SoftwareInfo>(ordered);
         }
 
         private async Task UninstallAsync(SoftwareInfo software)
         {
             if (software == null) return;
 
-            var confirm = MessageBox.Show(
+            var confirm = MessageBoxHelper.Show(
                 $"确定要卸载 {software.Name} 吗？\n\n" +
                 $"发布者：{software.Publisher}\n" +
                 $"版本：{software.Version}\n" +
@@ -170,20 +234,14 @@ namespace DiskCleaner.ViewModels
                 bool success = _manager.Uninstall(software);
                 Application.Current?.Dispatcher.BeginInvoke(() =>
                 {
-                    ResultMessage = success ? $"已启动 {software.Name} 的卸载程序" : $"卸载 {software.Name} 失败";
+                    ResultMessage = success
+                        ? $"已启动 {software.Name} 的卸载程序，请按提示完成卸载，完成后点击「刷新」更新列表"
+                        : $"卸载 {software.Name} 失败";
                 });
             });
 
             IsLoading = false;
             Progress = 100;
-
-            // 提示用户卸载完成后刷新列表
-            var refresh = MessageBox.Show(
-                "卸载程序已启动。卸载完成后是否刷新软件列表？",
-                "刷新列表", MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-            if (refresh == MessageBoxResult.Yes)
-                await LoadAsync();
         }
 
         private void OpenLocation(SoftwareInfo software)

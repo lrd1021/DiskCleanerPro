@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DiskCleaner.Helpers;
@@ -11,232 +11,317 @@ using DiskCleaner.Models;
 namespace DiskCleaner.Services
 {
     /// <summary>
-    /// 文件搬家服务
-    /// 将C盘大文件迁移到其他磁盘，可选创建符号链接保持原路径可用
+    /// 应用数据搬家服务（目录级）
+    /// 将 C 盘用户目录下占用空间较大的“应用数据目录”整体迁移到其它盘，
+    /// 并在原位创建目录 junction（无需管理员权限），使依赖原路径的应用无感知、可正常使用。
     /// </summary>
     public class FileMoverService
     {
         public Action<int, string> OnProgress { get; set; }
 
+        private static readonly string ManifestPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DiskCleanerPro", "MovedDirs.json");
+
+        // 根目录下这些系统目录本身及其子树不参与扫描/搬家（既无意义也危险）
+        private static readonly HashSet<string> SystemDirBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Windows", "Program Files", "Program Files (x86)", "ProgramData",
+            "$Recycle.Bin", "Recovery", "System Volume Information", "$SysReset",
+            "Documents and Settings", "Config.Msi"
+        };
+
         /// <summary>
-        /// 扫描C盘指定目录下的大文件
+        /// 按目录体积聚合扫描：一次迭代后序遍历算出每个目录体积，
+        /// 返回体积 >= minSize 的目录（降序、截断到 top 300）。
         /// </summary>
-        public async Task<List<LargeFileInfo>> ScanLargeFilesAsync(
+        public async Task<List<DirectorySizeInfo>> ScanLargeDirectoriesAsync(
             string rootPath, long minSize, CancellationToken ct = default)
         {
-            var result = new List<LargeFileInfo>();
-            OnProgress?.Invoke(0, "正在扫描大文件...");
+            OnProgress?.Invoke(0, "正在扫描目录体积...");
+            var result = new List<DirectorySizeInfo>();
 
             await Task.Run(() =>
             {
-                var stack = new Stack<string>();
+                // 1) 收集所有目录（前序），显式栈遍历，visited 防循环
+                var order = new List<string>();
                 var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var stack = new Stack<string>();
+                visited.Add(rootPath);
                 stack.Push(rootPath);
-                long scanned = 0;
+                long dirCount = 0;
 
                 while (stack.Count > 0)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var current = stack.Pop();
-                    if (!visited.Add(current))
-                    {
-                        Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{current}");
-                        continue;
-                    }
+                    var cur = stack.Pop();
+                    order.Add(cur);
 
-                    try
+                    NativeMethods.ForEachEntry(cur, e =>
                     {
-                        // 用 ForEachEntry 一次枚举同时拿到文件路径与大小，避免 Directory.GetFiles + new FileInfo() 二次 stat
-                        NativeMethods.ForEachEntry(current, e =>
-                        {
-                            if (e.Name == "." || e.Name == "..") return;
-                            if (e.IsReparsePoint) return;            // 不跟随重解析点
-                            var full = Path.Combine(current, e.Name);
-                            if (e.IsDirectory)
-                            {
-                                if (e.Name.Equals("Windows", StringComparison.OrdinalIgnoreCase) ||
-                                    e.Name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase) ||
-                                    e.Name.StartsWith("Program Files", StringComparison.OrdinalIgnoreCase))
-                                    return;
-                                if (!visited.Add(full))
-                                {
-                                    Logger.Warning($"检测到重复遍历目录（疑似循环链接），已防止无限枚举：{full}");
-                                    return;
-                                }
-                                stack.Push(full);
-                            }
-                            else
-                            {
-                                if (e.Size >= minSize)
-                                {
-                                    result.Add(new LargeFileInfo
-                                    {
-                                        FilePath = full,
-                                        FileName = e.Name,
-                                        Directory = current,
-                                        SizeBytes = e.Size,
-                                        LastModified = e.LastWriteTime,
-                                        Extension = Path.GetExtension(e.Name)
-                                    });
-                                }
-                                scanned++;
-                            }
-                        }, ct);
-                    }
-                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-                    {
-                        Logger.Warning($"大文件扫描目录失败: {ex.Message}");
-                    }
+                        if (e.IsReparsePoint) return;          // 不跟随 junction/符号链接
+                        if (!e.IsDirectory) return;
+                        var full = Path.Combine(cur, e.Name);
+                        // 根目录下的系统目录整棵跳过
+                        if (cur.Equals(rootPath, StringComparison.OrdinalIgnoreCase) &&
+                            SystemDirBlacklist.Contains(e.Name))
+                            return;
+                        if (visited.Add(full))
+                            stack.Push(full);
+                    }, ct);
 
-                    if (scanned % 500 == 0)
-                        OnProgress?.Invoke(-1, $"已扫描 {scanned} 个文件，找到 {result.Count} 个大文件");
+                    if (++dirCount % 200 == 0)
+                        OnProgress?.Invoke(-1, $"已枚举 {dirCount} 个目录...");
                 }
+
+                // 2) 后序计算体积：从 order 末尾向前，父目录累加已算好的子目录体积
+                var sizeMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                var fileMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                for (int i = order.Count - 1; i >= 0; i--)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var dir = order[i];
+                    long size = 0;
+                    int files = 0;
+                    NativeMethods.ForEachEntry(dir, e =>
+                    {
+                        if (e.IsReparsePoint) return;
+                        var full = Path.Combine(dir, e.Name);
+                        if (e.IsDirectory)
+                        {
+                            if (sizeMap.TryGetValue(full, out var childSize))
+                                size += childSize;
+                        }
+                        else
+                        {
+                            size += e.Size;
+                            files++;
+                        }
+                    }, ct);
+                    sizeMap[dir] = size;
+                    fileMap[dir] = files;
+                }
+
+                // 3) 过滤 + 排序 + 截断
+                foreach (var dir in order)
+                {
+                    if (dir.Equals(rootPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (sizeMap.TryGetValue(dir, out var sz) && sz >= minSize)
+                        result.Add(new DirectorySizeInfo
+                        {
+                            DirectoryPath = dir,
+                            SizeBytes = sz,
+                            FileCount = fileMap.TryGetValue(dir, out var fc) ? fc : 0
+                        });
+                }
+
+                result.Sort((a, b) => b.SizeBytes.CompareTo(a.SizeBytes));
+                if (result.Count > 300)
+                    result = result.GetRange(0, 300);
+
+                OnProgress?.Invoke(100, $"扫描完成，找到 {result.Count} 个大于 {FileSizeFormatter.Format(minSize)} 的目录");
             }, ct);
 
-            result.Sort((a, b) => b.SizeBytes.CompareTo(a.SizeBytes));
-            OnProgress?.Invoke(100, $"扫描完成，找到 {result.Count} 个大文件");
             return result;
         }
 
         /// <summary>
-        /// 获取可用目标盘
+        /// 获取可用目标盘（非 C 盘的本地固定盘）。
         /// </summary>
         public List<DriveInfo> GetAvailableTargetDrives()
         {
             return DriveInfo.GetDrives()
-                .Where(d => d.IsReady && d.DriveType == DriveType.Fixed && d.Name != "C:\\")
+                .Where(d => d.IsReady && d.DriveType == DriveType.Fixed && !d.Name.Equals("C:\\", StringComparison.OrdinalIgnoreCase))
                 .ToList();
         }
 
         /// <summary>
-        /// 执行文件搬家
+        /// 整体搬移一个目录到目标盘，并在原位创建 junction（若 createJunction=true）。
+        /// 失败会尽量回滚到搬移前状态。
         /// </summary>
-        public async Task<MoveTask> MoveFileAsync(
-            LargeFileInfo file, string targetDir, bool createSymlink, CancellationToken ct = default)
+        public async Task<MoveTask> MoveDirectoryAsync(
+            DirectorySizeInfo dir, string targetDrive, bool createJunction, CancellationToken ct = default)
         {
             var task = new MoveTask
             {
-                FileName = file.FileName,
-                SourcePath = file.FilePath,
-                FileSizeBytes = file.SizeBytes,
-                CreateSymlink = createSymlink,
+                FileName = dir.DirectoryName,
+                SourcePath = dir.DirectoryPath,
+                FileSizeBytes = dir.SizeBytes,
+                CreateSymlink = createJunction,
                 Status = MoveTask.MoveStatus.Moving,
                 Progress = 0
             };
 
-            string targetFileName = Path.GetFileName(file.FilePath);
-            string targetPath = Path.Combine(targetDir, targetFileName);
-
-            // 处理重名
-            int dup = 1;
-            while (File.Exists(targetPath))
-            {
-                var nameNoExt = Path.GetFileNameWithoutExtension(targetFileName);
-                var ext = Path.GetExtension(targetFileName);
-                targetPath = Path.Combine(targetDir, $"{nameNoExt} ({dup}){ext}");
-                dup++;
-            }
-
-            task.TargetPath = targetPath;
-
             await Task.Run(() =>
             {
+                string src = dir.DirectoryPath;
+                string baseName = new DirectoryInfo(src).Name;
+                string targetBase = Path.Combine(targetDrive, "MovedFromC");
+                string targetDir = Path.Combine(targetBase, baseName);
+
                 try
                 {
-                    // 确保目标目录存在
-                    Directory.CreateDirectory(targetDir);
+                    if (!Directory.Exists(src))
+                        throw new IOException("源目录不存在");
+                    if (JunctionHelper.IsJunction(src))
+                        throw new IOException("源已是 junction/符号链接，跳过以防循环");
 
-                    // 复制文件（带进度）
-                    CopyFileWithProgress(file.FilePath, targetPath, task, ct);
+                    // 重名处理
+                    int dup = 1;
+                    string candidate = targetDir;
+                    while (Directory.Exists(candidate) || File.Exists(candidate))
+                        candidate = $"{targetDir} ({dup++})";
+                    targetDir = candidate;
 
-                    // 验证复制完整性
-                    if (new FileInfo(targetPath).Length != file.SizeBytes)
-                        throw new IOException("文件大小不匹配，复制可能不完整");
+                    Directory.CreateDirectory(targetBase);
 
-                    // 如果需要符号链接：先删除源文件释放路径，再创建指向目标的符号链接
-                    // （CreateSymbolicLink 要求目标路径不存在，否则返回 ERROR_ALREADY_EXISTS）
-                    if (createSymlink)
+                    // 跨盘移动（同盘为 rename、跨盘为复制+删除；复制失败会抛异常）
+                    Directory.Move(src, targetDir);
+
+                    if (createJunction)
                     {
-                        // 检测源路径是否为 ReparsePoint（防止符号链接攻击）
-                        if ((File.GetAttributes(file.FilePath) & FileAttributes.ReparsePoint) != 0)
-                            throw new IOException("源文件是符号链接/交接点，拒绝操作");
-
-                        // 复制已校验，源可安全删除
-                        File.Delete(file.FilePath);
-
-                        if (!ElevationHelper.CreateSymlinkElevated(file.FilePath, targetPath))
+                        if (!JunctionHelper.CreateJunction(src, targetDir))
                         {
-                            // 建链失败（通常缺少管理员权限或用户取消 UAC）：文件已安全移动到目标，按纯移动处理
-                            task.Status = MoveTask.MoveStatus.Completed;
-                            task.Progress = 100;
-                            OnProgress?.Invoke(100, $"已完成（符号链接创建失败，已移动文件到目标）：{file.FileName}");
-                            return;
+                            // 建链失败：把目录移回原位，保证“要么完整搬家+可用，要么原样不动”
+                            try { if (!Directory.Exists(src) && Directory.Exists(targetDir)) Directory.Move(targetDir, src); }
+                            catch { }
+                            throw new IOException("创建 junction 失败，已回滚到搬移前状态");
                         }
-                    }
-                    else
-                    {
-                        // 纯移动：直接删除源文件
-                        File.Delete(file.FilePath);
+                        RecordMoved(src, targetDir);
                     }
 
+                    task.TargetPath = targetDir;
                     task.Status = MoveTask.MoveStatus.Completed;
                     task.Progress = 100;
-                    OnProgress?.Invoke(100, $"已完成：{file.FileName}");
+                    OnProgress?.Invoke(100, createJunction
+                        ? $"已完成（已建 junction，应用无感知）：{baseName}"
+                        : $"已完成（纯移动，原路径已失效）：{baseName}");
                 }
                 catch (OperationCanceledException)
                 {
                     task.Status = MoveTask.MoveStatus.Skipped;
-                    // 清理半成品
-                    try { if (File.Exists(targetPath)) File.Delete(targetPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    try { if (!Directory.Exists(src) && Directory.Exists(targetDir)) Directory.Move(targetDir, src); } catch { }
                 }
                 catch (Exception ex)
                 {
                     task.Status = MoveTask.MoveStatus.Failed;
+                    // 回滚：源消失而目标存在时搬回
+                    try { if (!Directory.Exists(src) && Directory.Exists(targetDir)) Directory.Move(targetDir, src); } catch { }
                     OnProgress?.Invoke(100, $"失败：{ex.Message}");
-                    // 清理半成品
-                    try { if (File.Exists(targetPath)) File.Delete(targetPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
             }, ct);
 
             return task;
         }
 
-        private void CopyFileWithProgress(string source, string target, MoveTask task, CancellationToken ct)
+        /// <summary>
+        /// 把之前搬走的目录搬回原位：删除原位的 junction，把目标目录移回。
+        /// </summary>
+        public async Task<MoveTask> MoveBackAsync(DirectorySizeInfo dir, CancellationToken ct = default)
         {
-            const int bufferSize = 1024 * 1024; // 1MB buffer
-            byte[] buffer = new byte[bufferSize];
-            long totalBytes = new FileInfo(source).Length;
-            long copiedBytes = 0;
-
-            using (var src = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize))
-            using (var dst = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize))
+            var task = new MoveTask
             {
-                int read;
-                while ((read = src.Read(buffer, 0, bufferSize)) > 0)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    dst.Write(buffer, 0, read);
-                    copiedBytes += read;
+                FileName = dir.DirectoryName,
+                SourcePath = dir.DirectoryPath,
+                FileSizeBytes = dir.SizeBytes,
+                Status = MoveTask.MoveStatus.Moving,
+                Progress = 0
+            };
 
-                    int pct = (int)((double)copiedBytes / totalBytes * 100);
-                    task.Progress = pct;
-                    OnProgress?.Invoke(pct, $"搬移中... {pct}%");
+            var manifest = LoadMovedManifest();
+            if (!manifest.TryGetValue(dir.DirectoryPath, out var target) || !Directory.Exists(target))
+            {
+                task.Status = MoveTask.MoveStatus.Failed;
+                task.Progress = 100;
+                OnProgress?.Invoke(100, "找不到搬家记录或目标已不存在，无法搬回");
+                return task;
+            }
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    if (!JunctionHelper.IsJunction(dir.DirectoryPath))
+                        throw new IOException("原位已不是 junction，无法安全搬回（以免误删目标内容）");
+
+                    JunctionHelper.DeleteJunction(dir.DirectoryPath);
+                    Directory.Move(target, dir.DirectoryPath);
+
+                    manifest.Remove(dir.DirectoryPath);
+                    SaveMovedManifest(manifest);
+
+                    task.TargetPath = target;
+                    task.Status = MoveTask.MoveStatus.Completed;
+                    task.Progress = 100;
+                    OnProgress?.Invoke(100, $"已搬回：{dir.DirectoryName}");
                 }
+                catch (OperationCanceledException)
+                {
+                    task.Status = MoveTask.MoveStatus.Skipped;
+                }
+                catch (Exception ex)
+                {
+                    task.Status = MoveTask.MoveStatus.Failed;
+                    OnProgress?.Invoke(100, $"搬回失败：{ex.Message}");
+                }
+            }, ct);
+
+            return task;
+        }
+
+        // ── Manifest：记录 原路径 -> 目标路径 ──
+
+        public Dictionary<string, string> LoadMovedManifest()
+        {
+            try
+            {
+                if (!File.Exists(ManifestPath)) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var json = File.ReadAllText(ManifestPath);
+                var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                return dict ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"读取搬家清单失败: {ex.Message}");
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private void RecordMoved(string original, string target)
+        {
+            var dict = LoadMovedManifest();
+            dict[original] = target;
+            SaveMovedManifest(dict);
+        }
+
+        private void SaveMovedManifest(Dictionary<string, string> dict)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(ManifestPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                var json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(ManifestPath, json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"写入搬家清单失败: {ex.Message}");
             }
         }
     }
 
-    /// <summary>大文件信息</summary>
-    public class LargeFileInfo : ViewModelBase
+    /// <summary>目录体积信息（按目录聚合）</summary>
+    public class DirectorySizeInfo : ViewModelBase
     {
         private bool _isSelected;
 
-        public string FilePath { get; set; }
-        public string FileName { get; set; }
-        public string Directory { get; set; }
+        public string DirectoryPath { get; set; }
         public long SizeBytes { get; set; }
-        public DateTime LastModified { get; set; }
-        public string Extension { get; set; }
+        public int FileCount { get; set; }
+
+        public bool IsMoved { get; set; }
+        public string MovedToPath { get; set; }
 
         public bool IsSelected
         {
@@ -244,7 +329,12 @@ namespace DiskCleaner.Services
             set => Set(ref _isSelected, value);
         }
 
+        public string DirectoryName => string.IsNullOrEmpty(DirectoryPath)
+            ? ""
+            : Path.GetFileName(DirectoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
         public string SizeDisplay => FileSizeFormatter.Format(SizeBytes);
-        public string LastModifiedDisplay => LastModified.ToString("yyyy-MM-dd");
+        public string FileCountDisplay => $"{FileCount:N0} 个文件";
+        public string StatusDisplay => IsMoved ? $"已搬至 {MovedToPath}" : "原地";
     }
 }

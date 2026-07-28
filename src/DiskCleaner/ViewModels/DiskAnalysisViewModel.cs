@@ -36,7 +36,7 @@ namespace DiskCleaner.ViewModels
         public bool IsAnalyzing
         {
             get => _isAnalyzing;
-            set => Set(ref _isAnalyzing, value);
+            set { Set(ref _isAnalyzing, value); System.Windows.Input.CommandManager.InvalidateRequerySuggested(); }
         }
 
         public int Progress
@@ -62,6 +62,13 @@ namespace DiskCleaner.ViewModels
         }
 
         public string TotalSizeDisplay => FileSizeFormatter.Format(TotalSize);
+
+        private string _analyzeButtonText = "开始分析";
+        public string AnalyzeButtonText
+        {
+            get => _analyzeButtonText;
+            set => Set(ref _analyzeButtonText, value);
+        }
 
         public ICommand AnalyzeCommand { get; }
         public ICommand CancelCommand { get; }
@@ -110,6 +117,7 @@ namespace DiskCleaner.ViewModels
                     RootFolders.Add(f);
                 }
                 ProgressText = $"分析完成，C盘根目录共占用 {TotalSizeDisplay}";
+                AnalyzeButtonText = "重新分析";
             }
             catch (System.OperationCanceledException)
             {

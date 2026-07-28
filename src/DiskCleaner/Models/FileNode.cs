@@ -45,9 +45,16 @@ namespace DiskCleaner.Models
         /// <summary>文件扩展名（仅文件有）</summary>
         public string Extension { get; set; }
 
+        /// <summary>类型图标：目录/文件</summary>
+        public string TypeIcon => IsDirectory ? "📁" : "📄";
+
         /// <summary>安全评级</summary>
         public string SafetyIcon => string.IsNullOrEmpty(FullPath)
             ? "" : FileSafetyAnalyzer.Analyze(FullPath).Icon;
+
+        /// <summary>安全评级颜色</summary>
+        public System.Windows.Media.Brush SafetyIconBrush => string.IsNullOrEmpty(FullPath)
+            ? null : FileSafetyAnalyzer.Analyze(FullPath).IconBrush;
 
         /// <summary>安全评级提示</summary>
         public string SafetyTooltip => string.IsNullOrEmpty(FullPath)
