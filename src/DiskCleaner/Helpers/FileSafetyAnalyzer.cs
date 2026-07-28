@@ -84,7 +84,8 @@ namespace DiskCleaner.Helpers
             @"\Temp\", @"\tmp\", @"\cache\", @"\Cache\",
             @"\CrashDumps\", @"\Logs\", @"\logs\",
             @"\Download\", @"\Downloads\",
-            @"\Microsoft\Windows\WER\", @"\thumbnails\"
+            @"\Microsoft\Windows\WER\", @"\thumbnails\",
+            @"\PackageCache\", @"\packages.tuanjie.cn\", @"\Burst\Cache\"
         };
 
         // 扩展名分类
@@ -94,6 +95,7 @@ namespace DiskCleaner.Helpers
             { ".sys",   (FileSafetyLevel.Danger, "Windows 系统驱动程序文件") },
             { ".dll",   (FileSafetyLevel.Danger, "动态链接库，程序运行依赖") },
             { ".ocx",   (FileSafetyLevel.Danger, "ActiveX 控件，程序组件") },
+            { ".dylib", (FileSafetyLevel.Caution, "类 Unix 动态链接库，可能是程序组件") },
             { ".drv",   (FileSafetyLevel.Danger, "设备驱动文件") },
             { ".inf",   (FileSafetyLevel.Danger, "驱动安装信息文件") },
             { ".cat",   (FileSafetyLevel.Danger, "安全编录签名文件") },

@@ -152,9 +152,19 @@ namespace DiskCleaner.Models
             ? "" : Safety.Description + "\n" + Safety.Reason + "\n建议：" + Safety.Suggestion;
 
         /// <summary>将 AI 分析结果写回，覆盖本地安全判定（优先级更高）。
-        /// AI 判为 Danger 时本文件会变红并被锁定保留；判 Safe 时图标变绿。同时刷新所有相关 UI 绑定。</summary>
+        /// AI 判为 Danger 时本文件会变红并被锁定保留；判 Safe 时图标变绿。
+        /// 防御性规则：AI 返回 Unknown 时，如果本地已有更明确的 Safe/Caution/Danger 结论，
+        /// 则不降级覆盖，避免把“可安全删除”或“建议保留”变成“AI·无法识别”。</summary>
         public void ApplyAiSafety(FileSafetyLevel level, string description, string belongsTo, string suggestion)
         {
+            // 触发本地分析以拿到当前本地结论（若尚未分析）
+            var localLevel = Safety.Level;
+            if (level == FileSafetyLevel.Unknown && localLevel != FileSafetyLevel.Unknown)
+            {
+                // AI 无法识别但本地已有明确结论：保留本地结论，不写 AI 覆盖
+                return;
+            }
+
             _aiSafety = new FileSafetyInfo
             {
                 Level = level,
