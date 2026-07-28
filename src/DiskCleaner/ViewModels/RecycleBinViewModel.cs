@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
@@ -23,6 +24,8 @@ namespace DiskCleaner.ViewModels
     {
         private readonly RecycleBinManager _manager = new RecycleBinManager();
         private RecycleBinInfo _cDriveInfo;
+        private ObservableCollection<RecycleBinDriveOption> _drives;
+        private RecycleBinDriveOption _selectedDrive;
         private bool _isBusy;
         private string _resultMessage;
         private int _progress;
@@ -146,15 +149,13 @@ namespace DiskCleaner.ViewModels
 
         public ICommand RefreshCommand { get; }
         public ICommand EmptyCommand { get; }
-        public ICommand EmptyAllCommand { get; }
         public ICommand RestoreCommand { get; }
         public ICommand RestoreAllCommand { get; }
 
         public RecycleBinViewModel()
         {
             RefreshCommand = new RelayCommand(Refresh, () => !IsBusy);
-            EmptyCommand = new RelayCommand(async () => await EmptyAsync(false), () => !IsBusy && !IsEmpty);
-            EmptyAllCommand = new RelayCommand(async () => await EmptyAsync(true), () => !IsBusy && !IsEmpty);
+            EmptyCommand = new RelayCommand(async () => await EmptyAsync(), () => !IsBusy && !IsEmpty);
             RestoreCommand = new AsyncRelayCommand(async () => await RestoreAsync(false), () => !IsBusy && HasItems);
             RestoreAllCommand = new AsyncRelayCommand(async () => await RestoreAsync(true), () => !IsBusy && HasItems);
 
@@ -167,18 +168,71 @@ namespace DiskCleaner.ViewModels
                 });
             };
 
+            // 下拉选项：默认“全部回收站” + 各固定本地盘
+            _drives = new ObservableCollection<RecycleBinDriveOption>
+            {
+                new RecycleBinDriveOption { Label = "全部回收站", Root = null }
+            };
+            try
+            {
+                foreach (var d in DriveInfo.GetDrives().Where(x => x.DriveType == DriveType.Fixed))
+                {
+                    _drives.Add(new RecycleBinDriveOption
+                    {
+                        Label = $"{d.Name.TrimEnd('\\')} 盘 ({DriveLabel(d)})",
+                        Root = d.RootDirectory.FullName
+                    });
+                }
+            }
+            catch { /* 枚举磁盘失败不影响启动 */ }
+
+            _selectedDrive = _drives[0];
+
             Refresh();
+        }
+
+        /// <summary>当前选择范围（全部或某盘）的展示名，用于状态卡片标题</summary>
+        public string ScopeLabel => SelectedDrive?.IsAll == true
+            ? "全部回收站"
+            : $"{SelectedDrive.Label} 回收站";
+
+        /// <summary>可选回收站范围（全部 + 各固定盘）</summary>
+        public ObservableCollection<RecycleBinDriveOption> Drives
+        {
+            get => _drives;
+            set => Set(ref _drives, value);
+        }
+
+        /// <summary>当前选中的回收站范围；改变时自动刷新统计与列表</summary>
+        public RecycleBinDriveOption SelectedDrive
+        {
+            get => _selectedDrive;
+            set
+            {
+                if (Set(ref _selectedDrive, value))
+                {
+                    OnPropertyChanged(nameof(ScopeLabel));
+                    Refresh();
+                }
+            }
         }
 
         public void Refresh()
         {
-            CDriveInfo = _manager.Query("C:\\");
+            var root = SelectedDrive?.Root;   // null = 全部
+            CDriveInfo = _manager.Query(root);
             LoadItems();
+        }
+
+        private static string DriveLabel(DriveInfo d)
+        {
+            try { return string.IsNullOrWhiteSpace(d.VolumeLabel) ? "本地磁盘" : d.VolumeLabel; }
+            catch { return "本地磁盘"; }
         }
 
         private void LoadItems()
         {
-            var list = _manager.Enumerate();
+            var list = _manager.Enumerate(SelectedDrive?.Root);
             var vms = new ObservableCollection<RecycleBinItem>(list);
             foreach (var it in vms) it.IsSelected = _selectAll;
             Items = vms;
@@ -249,11 +303,14 @@ namespace DiskCleaner.ViewModels
             Refresh();
         }
 
-        private async Task EmptyAsync(bool allDrives)
+        private async Task EmptyAsync()
         {
-            var msg = allDrives ? "所有盘的回收站" : "C盘回收站";
+            var opt = SelectedDrive;
+            if (opt == null) return;
+
+            string scope = opt.IsAll ? "所有盘的回收站" : $"{opt.Label} 回收站";
             var confirm = MessageBox.Show(
-                $"即将永久清空{msg}中的 {SizeDisplay} 数据。\n\n" +
+                $"即将永久清空{scope}中的 {SizeDisplay} 数据（共 {ItemDisplay}）。\n\n" +
                 "此操作不可恢复！\n\n确认继续？",
                 "清空回收站", MessageBoxButton.YesNo, MessageBoxImage.Warning);
 
@@ -264,8 +321,7 @@ namespace DiskCleaner.ViewModels
 
             try
             {
-                bool success = await Task.Run(() =>
-                    allDrives ? _manager.EmptyAll() : _manager.Empty("C:\\"));
+                bool success = await Task.Run(() => _manager.Empty(opt.Root));
 
                 ResultMessage = success ? "回收站已清空" : "清空失败，可能部分文件被占用";
                 Refresh();
@@ -276,5 +332,13 @@ namespace DiskCleaner.ViewModels
                 Progress = 100;
             }
         }
+    }
+
+    /// <summary>回收站清空范围选项：Root 为 null 表示“全部”，否则为具体盘根目录（如 "C:\"）。</summary>
+    public class RecycleBinDriveOption
+    {
+        public string Label { get; set; }
+        public string Root { get; set; }
+        public bool IsAll => Root == null;
     }
 }

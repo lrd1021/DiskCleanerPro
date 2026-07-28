@@ -51,31 +51,27 @@ namespace DiskCleaner.Services
             return result == 0;
         }
 
-        /// <summary>清空所有盘的回收站</summary>
-        public bool EmptyAll(bool silent = true)
-        {
-            OnProgress?.Invoke(0, "正在清空所有回收站...");
-            uint flags = NativeMethods.SHERB_NOCONFIRMATION;
-            if (silent) flags |= NativeMethods.SHERB_NOPROGRESSUI | NativeMethods.SHERB_NOSOUND;
-
-            int result = NativeMethods.SHEmptyRecycleBin(IntPtr.Zero, null, flags);
-            OnProgress?.Invoke(100, result == 0 ? "回收站已清空" : $"清空失败 (错误码: {result})");
-            return result == 0;
-        }
-
         /// <summary>
         /// 枚举当前用户在各固定盘回收站中的文件。返回明细列表（原路径/大小/删除时间/数据路径）。
         /// 解析失败时跳过单个文件而非整体失败。
         /// </summary>
-        public List<RecycleBinItem> Enumerate()
+        /// <param name="drive">指定盘根目录（如 "C:\"）；传 null 枚举所有固定盘。</param>
+        public List<RecycleBinItem> Enumerate(string drive = null)
         {
             var result = new List<RecycleBinItem>();
             string sid = GetCurrentSid();
             if (string.IsNullOrEmpty(sid)) return result;
 
-            foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed))
+            IEnumerable<DriveInfo> drives = DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed);
+            if (!string.IsNullOrEmpty(drive))
             {
-                string userBin = Path.Combine(drive.RootDirectory.FullName, "$Recycle.Bin", sid);
+                string root = drive.EndsWith("\\", StringComparison.Ordinal) ? drive : drive + "\\";
+                drives = drives.Where(d => string.Equals(d.RootDirectory.FullName, root, StringComparison.OrdinalIgnoreCase));
+            }
+
+            foreach (var d in drives)
+            {
+                string userBin = Path.Combine(d.RootDirectory.FullName, "$Recycle.Bin", sid);
                 if (!Directory.Exists(userBin)) continue;
                 try
                 {

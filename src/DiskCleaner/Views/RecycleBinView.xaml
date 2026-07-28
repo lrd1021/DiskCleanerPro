@@ -10,20 +10,27 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="32,28">
         <StackPanel MaxWidth="700" HorizontalAlignment="Left">
             <TextBlock Text="回收站清空" FontSize="24" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,4" />
-            <TextBlock Text="查看并清空C盘（或所有盘）回收站中的文件" FontSize="14" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,24" />
+            <TextBlock Text="选择回收站范围后清空（默认清空全部回收站）" FontSize="14" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,24" />
 
             <!-- 回收站状态卡片 -->
             <Border Background="{StaticResource CardBrush}" CornerRadius="12" Padding="32,28" Margin="0,0,0,24">
                 <StackPanel HorizontalAlignment="Center">
-                    <TextBlock Text="C盘回收站" FontSize="16" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding ScopeLabel}" FontSize="16" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center" />
 
                     <TextBlock Text="{Binding SizeDisplay}" FontSize="36" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" Margin="0,8,0,4" />
                     <TextBlock Text="{Binding ItemDisplay}" FontSize="14" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,20" />
 
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                         <Button Content="刷新" Command="{Binding RefreshCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0" />
-                        <Button Content="清空C盘" Command="{Binding EmptyCommand}" Style="{StaticResource DangerButton}" Margin="0,0,12,0" />
-                        <Button Content="清空所有盘" Command="{Binding EmptyAllCommand}" Style="{StaticResource DangerButton}" />
+                        <ComboBox ItemsSource="{Binding Drives}" SelectedItem="{Binding SelectedDrive, Mode=TwoWay}"
+                                  Width="210" Margin="0,0,12,0" Style="{StaticResource ModernComboBox}" ToolTip="选择要清空的回收站范围">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Label}" Foreground="White" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <Button Content="清空回收站" Command="{Binding EmptyCommand}" Style="{StaticResource DangerButton}" />
                     </StackPanel>
                 </StackPanel>
             </Border>
@@ -197,7 +204,7 @@
                         </ListView.View>
                     </ListView>
 
-                    <TextBlock Text="列表包含本机所有固定盘上当前用户的回收站文件（不只 C 盘）。恢复会把文件移回原路径，并从回收站移除。" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                    <TextBlock Text="列表显示当前所选范围内的回收站文件（默认全部盘）。恢复会把文件移回原路径，并从回收站移除。" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
@@ -211,7 +218,7 @@
             <Border Background="#2D2D2D" CornerRadius="8" Padding="16">
                 <StackPanel>
                     <TextBlock Text="注意事项" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource DangerBrush}" />
-                    <TextBlock Text="1. 清空回收站是不可逆操作，文件将永久删除。&#x0a;2. 被程序占用的文件可能无法删除，建议关闭相关程序后重试。&#x0a;3. 清空所有盘会清理所有磁盘分区的回收站。&#x0a;4. 分类按文件自身属性（类型/位置/时间/大小）自动识别，仅用于在列表中分组查看。" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,6,0,0" TextWrapping="Wrap" />
+                    <TextBlock Text="1. 清空回收站是不可逆操作，文件将永久删除。&#x0a;2. 被程序占用的文件可能无法删除，建议关闭相关程序后重试。&#x0a;3. 下拉框默认“全部回收站”清空所有盘；选择具体盘符则只清空该盘回收站。&#x0a;4. 分类按文件自身属性（类型/位置/时间/大小）自动识别，仅用于在列表中分组查看。" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,6,0,0" TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
         </StackPanel>
