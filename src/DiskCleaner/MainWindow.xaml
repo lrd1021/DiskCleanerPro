@@ -3,10 +3,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="DiskCleaner Pro — C盘清理工具"
-        Height="720" Width="1100"
+        Height="760" Width="1340"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BackgroundBrush}"
-        MinHeight="600" MinWidth="900"
+        MinHeight="600" MinWidth="1240"
         shell:WindowChrome.WindowChrome="{StaticResource MainChrome}">
     <Grid>
         <Grid.RowDefinitions>
