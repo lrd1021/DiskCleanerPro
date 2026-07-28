@@ -534,6 +534,10 @@ namespace DiskCleaner.ViewModels
                 checkedGroups++;
                 foreach (var f in g.Files)
                 {
+                    // 已是「AI 判定为危险(Danger)」并锁定的文件：不再送 AI 二次分析，
+                    // 避免被一次较弱/“未知”的判定降级解锁（安全优先，锁定只增不减）。
+                    if (f.HasAiSafety && f.IsCritical) continue;
+
                     var si = FileSafetyAnalyzer.Analyze(f.FilePath);
                     if (si.Level == FileSafetyLevel.Unknown || si.Level == FileSafetyLevel.Caution)
                         candidates.Add(f.FilePath);
@@ -573,6 +577,8 @@ namespace DiskCleaner.ViewModels
                 int safe = results.Count(r => r.Success && r.SafetyLevel == FileSafetyLevel.Safe);
 
                 string summary = $"AI 分析完成：{updated}/{results.Count} 个文件已更新评级 — {danger} 个危险(已锁定保留)、{caution} 个建议谨慎、{safe} 个可安全删除";
+                if (PreservedLocks > 0)
+                    summary += $"；{PreservedLocks} 个原危险锁定文件因安全优先保持不变（如需解锁请重新扫描后再分析）";
                 ResultMessage = danger > 0
                     ? "⚠️ " + summary + "（危险文件已自动锁定保留，切勿删除）"
                     : summary;
@@ -605,6 +611,7 @@ namespace DiskCleaner.ViewModels
         private int ApplyAIResults(System.Collections.Generic.List<AIAnalysisResult> results)
         {
             int count = 0;
+            int preservedLocks = 0;
             foreach (var r in results)
             {
                 if (!r.Success) continue;
@@ -613,11 +620,22 @@ namespace DiskCleaner.ViewModels
                     foreach (var f in g.Files)
                         if (f.FilePath == r.FilePath)
                         {
+                            // 反向下调保护：已是「AI 危险锁定」的文件，二次判定即便返回
+                            // safe/caution/unknown 也不解锁，安全优先，仅当二次仍判 danger 才保持。
+                            if (f.HasAiSafety && f.IsCritical && r.SafetyLevel != FileSafetyLevel.Danger)
+                            {
+                                preservedLocks++;
+                                continue;
+                            }
                             f.ApplyAiSafety(r.SafetyLevel, r.Description, r.BelongsTo, r.Suggestion);
                             count++;
                         }
             }
+            PreservedLocks = preservedLocks;
             return count;
         }
+
+        /// <summary>本次 AI 分析中因安全优先而未解除的“危险锁定”文件数量（用于结果提示）。</summary>
+        public int PreservedLocks { get; private set; }
     }
 }
