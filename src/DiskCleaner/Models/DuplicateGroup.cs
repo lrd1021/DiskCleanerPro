@@ -38,9 +38,16 @@ namespace DiskCleaner.Models
         /// <summary>本组是否含有系统/程序必需（Danger）文件。这类文件已被锁定保留、不可删。</summary>
         public bool ContainsCritical => Files.Any(f => f.IsCritical);
 
+        /// <summary>本组是否含有经 AI 判定为危险（Danger）的文件（含 AI 覆盖本地判定的情况）。</summary>
+        public bool ContainsAiDanger => Files.Any(f => f.HasAiSafety && f.IsCritical);
+
         /// <summary>组级警告文案：当含有被锁定保留的关键文件时显示。</summary>
         public string CriticalWarning =>
             ContainsCritical ? "⚠️ 本组含系统/程序必需文件，已自动锁定保留（显示🔒的行不可删除）" : "";
+
+        /// <summary>组级 AI 危险警告：AI 将本组某些文件判为危险时显示（区别于本地系统关键文件)。</summary>
+        public string AiDangerWarning =>
+            ContainsAiDanger ? "⚠️ AI 判定本组含危险文件，已自动锁定保留（显示🔒的行不可删除）" : "";
 
         /// <summary>订阅组内每个文件的 KeepThis 变化，实时刷新 WasteBytes/WasteDisplay。</summary>
         public void HookFileChanges()
@@ -51,10 +58,15 @@ namespace DiskCleaner.Models
 
         private void OnFilePropertyChanged(object sender, PropertyChangedEventArgs e)
         {
-            if (e.PropertyName == nameof(DuplicateFile.KeepThis))
+            if (e.PropertyName == nameof(DuplicateFile.KeepThis) ||
+                e.PropertyName == nameof(DuplicateFile.IsCritical))
             {
                 OnPropertyChanged(nameof(WasteBytes));
                 OnPropertyChanged(nameof(WasteDisplay));
+                OnPropertyChanged(nameof(ContainsCritical));
+                OnPropertyChanged(nameof(CriticalWarning));
+                OnPropertyChanged(nameof(ContainsAiDanger));
+                OnPropertyChanged(nameof(AiDangerWarning));
             }
         }
 
@@ -79,7 +91,10 @@ namespace DiskCleaner.Models
         public string LastModified { get; set; }
 
         private FileSafetyInfo _safety;
-        private FileSafetyInfo Safety => _safety ??= FileSafetyAnalyzer.Analyze(FilePath);
+        private FileSafetyInfo _aiSafety;
+
+        /// <summary>安全信息：AI 已分析时优先返回 AI 结果，否则回退本地规则缓存。</summary>
+        private FileSafetyInfo Safety => _aiSafety ?? (_safety ??= FileSafetyAnalyzer.Analyze(FilePath));
 
         /// <summary>安全评级（Safe/Caution/Danger/Unknown）。</summary>
         public FileSafetyLevel SafetyLevel => Safety.Level;
@@ -89,6 +104,14 @@ namespace DiskCleaner.Models
 
         /// <summary>该文件是否锁定保留（= IsCritical）。UI 据此禁用「保留」复选框并提示。</summary>
         public bool KeepThisLocked => IsCritical;
+
+        /// <summary>是否已用 AI 分析覆盖本地安全判定（用于 UI 区分来源）。</summary>
+        public bool HasAiSafety => _aiSafety != null;
+
+        /// <summary>AI 分析结果短句（仅 AI 已分析时非空），如「AI：Chrome 缓存｜可安全删除」。</summary>
+        public string AiAnalysisText => _aiSafety == null
+            ? ""
+            : $"AI：{_aiSafety.Description}｜{_aiSafety.Suggestion}";
 
         public string SafetyLevelText => Safety.LevelText;
         public string SafetySuggestion => Safety.Suggestion;
@@ -113,5 +136,27 @@ namespace DiskCleaner.Models
 
         public string SafetyTooltip => string.IsNullOrEmpty(FilePath)
             ? "" : Safety.Description + "\n" + Safety.Reason + "\n建议：" + Safety.Suggestion;
+
+        /// <summary>将 AI 分析结果写回，覆盖本地安全判定（优先级更高）。
+        /// AI 判为 Danger 时本文件会变红并被锁定保留；判 Safe 时图标变绿。同时刷新所有相关 UI 绑定。</summary>
+        public void ApplyAiSafety(FileSafetyLevel level, string description, string belongsTo, string suggestion)
+        {
+            _aiSafety = new FileSafetyInfo
+            {
+                Level = level,
+                Description = description ?? "",
+                Reason = string.IsNullOrWhiteSpace(belongsTo) ? "AI 分析判定" : $"AI 分析：属于 {belongsTo}",
+                Suggestion = suggestion ?? ""
+            };
+            foreach (var p in new[]
+            {
+                nameof(SafetyIcon), nameof(SafetyIconBrush), nameof(SafetyTooltip),
+                nameof(SafetyLevel), nameof(SafetyLevelText), nameof(SafetySuggestion),
+                nameof(IsCritical), nameof(KeepThisLocked), nameof(HasAiSafety), nameof(AiAnalysisText)
+            })
+            {
+                RaisePropertyChanged(p);
+            }
+        }
     }
 }

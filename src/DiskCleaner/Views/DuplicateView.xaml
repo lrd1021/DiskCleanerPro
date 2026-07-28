@@ -144,6 +144,8 @@
                             <!-- 组级安全警告：本组含被锁定保留的系统/程序必需文件时显示 -->
                             <TextBlock Text="{Binding CriticalWarning}" Foreground="{StaticResource DangerBrush}" FontSize="12"
                                        Margin="24,6,0,0" Visibility="{Binding ContainsCritical, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Text="{Binding AiDangerWarning}" Foreground="{StaticResource DangerBrush}" FontSize="12"
+                                       Margin="24,6,0,0" Visibility="{Binding ContainsAiDanger, Converter={StaticResource BoolToVis}}" />
 
                             <!-- 组内文件列表：默认展开。典型组文件数不大（几十），可见组内不虚拟化也可接受；
                                  若担心超大组（上千文件）单组卡顿，可后续改为可折叠 + 内层虚拟化 ListBox。 -->
@@ -192,6 +194,8 @@
                                                        Foreground="{StaticResource DangerBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                                        Visibility="{Binding KeepThisLocked, Converter={StaticResource BoolToVis}}" />
                                             <TextBlock Text="{Binding SafetyIcon}" FontSize="14" VerticalAlignment="Center" Margin="0,0,4,0" ToolTip="{Binding SafetyTooltip}" Foreground="{Binding SafetyIconBrush}" />
+                                            <TextBlock Text="{Binding AiAnalysisText}" Foreground="{StaticResource AccentBrush}" FontSize="11" VerticalAlignment="Center" Margin="6,0,0,0"
+                                                       Visibility="{Binding HasAiSafety, Converter={StaticResource BoolToVis}}" />
                                             <TextBlock VerticalAlignment="Center">
                                                 <Run Text="{Binding FileName, Mode=OneWay}" Foreground="White" />
                                                 <Run Text="  " />

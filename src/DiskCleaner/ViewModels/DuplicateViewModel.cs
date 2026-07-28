@@ -566,7 +566,30 @@ namespace DiskCleaner.ViewModels
             {
                 var results = await AIFileAnalyzer.AnalyzeBatchAsync(candidates, settings, _aiCts.Token);
                 int updated = ApplyAIResults(results);
-                ResultMessage = $"AI 分析完成：{updated}/{results.Count} 个文件已更新安全评级";
+
+                // 强汇总：按 AI 判定的危险/谨慎/安全分级统计，明确提示力度
+                int danger = results.Count(r => r.Success && r.SafetyLevel == FileSafetyLevel.Danger);
+                int caution = results.Count(r => r.Success && r.SafetyLevel == FileSafetyLevel.Caution);
+                int safe = results.Count(r => r.Success && r.SafetyLevel == FileSafetyLevel.Safe);
+
+                string summary = $"AI 分析完成：{updated}/{results.Count} 个文件已更新评级 — {danger} 个危险(已锁定保留)、{caution} 个建议谨慎、{safe} 个可安全删除";
+                ResultMessage = danger > 0
+                    ? "⚠️ " + summary + "（危险文件已自动锁定保留，切勿删除）"
+                    : summary;
+
+                // 危险文件额外弹强警告，列出具体文件名/归属
+                if (danger > 0)
+                {
+                    var names = results
+                        .Where(r => r.Success && r.SafetyLevel == FileSafetyLevel.Danger)
+                        .Select(r => $"• {r.FileName}（{(string.IsNullOrWhiteSpace(r.BelongsTo) ? "未知归属" : r.BelongsTo)}）")
+                        .Take(10)
+                        .ToList();
+                    MessageBoxHelper.Show(
+                        $"AI 将以下 {danger} 个文件判定为危险/系统关键，已自动锁定保留，切勿删除：\n\n{string.Join("\n", names)}" +
+                        (danger > 10 ? "\n…（仅显示前 10 个）" : ""),
+                        "AI 风险提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
             catch (System.Exception ex)
             {
@@ -585,13 +608,12 @@ namespace DiskCleaner.ViewModels
             foreach (var r in results)
             {
                 if (!r.Success) continue;
-                // 更新 DuplicateFile 的安全属性
+                // 真正把 AI 结果写回 DuplicateFile（覆盖本地判定），刷新所有相关 UI 绑定
                 foreach (var g in Groups)
                     foreach (var f in g.Files)
                         if (f.FilePath == r.FilePath)
                         {
-                            f.RaisePropertyChanged(nameof(f.SafetyIcon));
-                            f.RaisePropertyChanged(nameof(f.SafetyTooltip));
+                            f.ApplyAiSafety(r.SafetyLevel, r.Description, r.BelongsTo, r.Suggestion);
                             count++;
                         }
             }
