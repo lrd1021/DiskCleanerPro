@@ -201,7 +201,7 @@ namespace DiskCleaner.Services
     }
 
     /// <summary>回收站中的单个文件明细</summary>
-    public class RecycleBinItem
+    public class RecycleBinItem : ViewModelBase
     {
         public string DisplayName { get; set; }
         public string OriginalPath { get; set; }
@@ -216,7 +216,7 @@ namespace DiskCleaner.Services
         public bool IsSelected
         {
             get => _isSelected;
-            set => _isSelected = value;
+            set => Set(ref _isSelected, value);
         }
 
         public string SizeDisplay => FileSizeFormatter.Format(SizeBytes);

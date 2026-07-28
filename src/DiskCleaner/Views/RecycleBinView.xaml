@@ -172,7 +172,7 @@
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="清理来源" Width="90">
+                                <GridViewColumn Header="清理来源" Width="110">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <TextBlock Text="{Binding SourceCategory}" Foreground="White" TextTrimming="CharacterEllipsis" />
