@@ -27,6 +27,7 @@ namespace DiskCleaner
             "回收站清空",
             "保险箱",
             "文件搬家",
+            "应用专清",
             "软件管理"
         };
 
@@ -86,6 +87,7 @@ namespace DiskCleaner
             _pages["回收站清空"] = new RecycleBinView { DataContext = new RecycleBinViewModel() };
             _pages["保险箱"] = new QuarantineView { DataContext = new QuarantineViewModel() };
             _pages["文件搬家"] = new FileMoveView { DataContext = new FileMoveViewModel() };
+            _pages["应用专清"] = new AppCacheCleanView { DataContext = new AppCacheCleanViewModel() };
             _pages["软件管理"] = new SoftwareView { DataContext = new SoftwareViewModel() };
         }
 

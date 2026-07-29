@@ -133,9 +133,9 @@ namespace DiskCleaner.Services
                         var cachedFiles = new List<(string FullName, long Size)>();
                         foreach (var path in target.Paths)
                         {
-                            var (size, count, files) = await Task.Run(
-                                () => GetDirectorySize(path, ct, target.Name, target, ref runningSize, ref runningCount,
-                                    (fileCount) =>
+                        var (size, count, files) = await Task.Run(
+                            () => GetDirectorySize(path, ct, target.Name, target, OnProgress, OnTargetScanProgress, ref runningSize, ref runningCount,
+                                (fileCount) =>
                                     {
                                         // 让进度条在扫描巨型单目标时也缓慢前进，避免长时间卡在 87% 造成“卡死”错觉。
                                         // 子进度按“每 1000 个文件推进约 3%，上限 90%”，完成时再跳到 100%。
@@ -276,7 +276,7 @@ namespace DiskCleaner.Services
         /// 为文件路径选择最精确匹配的 target path：取最长前缀，且前缀后必须是路径分隔符或字符串结尾。
         /// 避免 C:\Temp 前缀误匹配 C:\TempFoo\file.txt。
         /// </summary>
-        private static string GetMatchingPath(string filePath, ObservableCollection<string> paths)
+        public static string GetMatchingPath(string filePath, ObservableCollection<string> paths)
         {
             string best = null;
             foreach (var p in paths)
@@ -311,9 +311,10 @@ namespace DiskCleaner.Services
 
         // 扫描不做文件数上限、不超时跳过：按用户要求完整扫描每个目录（仅用户主动取消可中断）。
 
-        private (long size, long count, List<(string FullName, long Size)> files) GetDirectorySize(
+        public static (long size, long count, List<(string FullName, long Size)> files) GetDirectorySize(
             string path, CancellationToken ct,
             string targetName, CleanTarget target,
+            Action<int, string> onProgress, Action<CleanTarget, long, long> onTargetScanProgress,
             ref long runningSize, ref long runningCount,
             Action<long> onHeartbeat = null)
         {
@@ -400,8 +401,8 @@ namespace DiskCleaner.Services
                                         long flushCount = Interlocked.Add(ref liveCountGlobal, localLiveCount[wid]);
                                         localLiveSize[wid] = 0;
                                         localLiveCount[wid] = 0;
-                                        OnProgress?.Invoke(-1, $"扫描 {targetName}：已扫描 {flushCount} 个文件");
-                                        OnTargetScanProgress?.Invoke(target, flushSize, flushCount);
+                                        onProgress?.Invoke(-1, $"扫描 {targetName}：已扫描 {flushCount} 个文件");
+                                        onTargetScanProgress?.Invoke(target, flushSize, flushCount);
                                         onHeartbeat?.Invoke(flushCount);
                                     }
                                 }, ct);
@@ -451,7 +452,7 @@ namespace DiskCleaner.Services
             return (totalSize, totalCount, allFiles);
         }
 
-        private IEnumerable<FileEntry> EnumerateFilesSafe(string path, CancellationToken ct, Action<int> onCount = null)
+        private static IEnumerable<FileEntry> EnumerateFilesSafe(string path, CancellationToken ct, Action<int> onCount = null)
         {
             // 用托管 DirectoryInfo.EnumerateFileSystemInfos 枚举：名称可靠、非阻塞，文件大小从枚举缓存读取，
             // 避免对每文件再调 GetFileAttributesEx；不跳过任何隐藏/系统文件（用户要求完整扫描）；仅不跟随重解析点（junction/符号链接），
@@ -508,7 +509,7 @@ namespace DiskCleaner.Services
             }
         }
 
-        private static string FormatEta(double elapsedSeconds, int processed, int total)
+        public static string FormatEta(double elapsedSeconds, int processed, int total)
         {
             if (processed <= 0 || elapsedSeconds < 0.5 || processed >= total) return "";
             double remain = elapsedSeconds * (total - processed) / processed;
@@ -517,7 +518,7 @@ namespace DiskCleaner.Services
             return $"，约剩 {(int)(remain / 3600)} 小时 {(int)((remain % 3600) / 60)} 分";
         }
 
-        private (long freed, int recycled, int directDeleted, int quarantined, int failed) DeleteDirectoryContents(
+        public static (long freed, int recycled, int directDeleted, int quarantined, int failed) DeleteDirectoryContents(
             string path,
             IList<(string FullName, long Size)> cachedFiles,
             DeleteMode mode,
@@ -534,7 +535,7 @@ namespace DiskCleaner.Services
                 try
                 {
                     long dSize = 0, dCount = 0;
-                    size = GetDirectorySize(path, ct, null, null, ref dSize, ref dCount).size;
+                    size = GetDirectorySize(path, ct, null, null, null, null, ref dSize, ref dCount).size;
                 }
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                 {
@@ -729,7 +730,7 @@ namespace DiskCleaner.Services
         /// <summary>
         /// 仅永久删除模式下清理已空的子目录（不跟随重解析点，避免误删其目标目录）。
         /// </summary>
-        private void CleanEmptyDirs(string path, CancellationToken ct)
+        private static void CleanEmptyDirs(string path, CancellationToken ct)
         {
             try
             {
