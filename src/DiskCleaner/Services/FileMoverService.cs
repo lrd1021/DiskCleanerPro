@@ -23,13 +23,63 @@ namespace DiskCleaner.Services
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "DiskCleanerPro", "MovedDirs.json");
 
-        // 根目录下这些系统目录本身及其子树不参与扫描/搬家（既无意义也危险）
-        private static readonly HashSet<string> SystemDirBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        // ── 三级搬家黑名单 ──
+        // 1) 根层系统目录：整块屏蔽（不显示、不深入）——既无意义也危险
+        private static readonly HashSet<string> HardBlockSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "Windows", "Program Files", "Program Files (x86)", "ProgramData",
             "$Recycle.Bin", "Recovery", "System Volume Information", "$SysReset",
-            "Documents and Settings", "Config.Msi"
+            "Documents and Settings", "Config.Msi", "Users"
         };
+
+        // 2) 软屏蔽容器：本身不显示在列表，但继续深入其子目录，
+        //    以便露出内部真正可搬的应用缓存/数据子目录（如 AppData 下的 Edge/Tuanjie/Unity 缓存）
+        private static readonly HashSet<string> SoftBlockPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "AppData",
+            "AppData\\Local",
+            "AppData\\Roaming",
+            "AppData\\LocalLow",
+            "Documents", "Desktop", "Downloads", "Pictures", "Music", "Videos",
+            "Favorites", "Links", "Saved Games", "OneDrive"
+        };
+
+        // 3) 深层危险路径：整块屏蔽（不显示、不深入）——
+        //    AppData 下的系统/程序相关目录，搬动会导致应用或系统异常
+        private static readonly string[] HardBlockPaths = new[]
+        {
+            "AppData\\Local\\Programs",
+            "AppData\\Roaming\\Programs",
+            "AppData\\Local\\Microsoft\\Windows",
+            "AppData\\Roaming\\Microsoft\\Windows",
+            "AppData\\LocalLow\\Microsoft\\Windows",
+            "AppData\\Local\\Microsoft\\WindowsApps"
+        };
+
+        private static string NormalizeRoot(string root) => root.EndsWith("\\") ? root : root + "\\";
+
+        private static string GetRelPath(string rootNorm, string full)
+        {
+            if (full.Length > rootNorm.Length && full.StartsWith(rootNorm, StringComparison.OrdinalIgnoreCase))
+                return full.Substring(rootNorm.Length).TrimStart('\\');
+            return Path.GetFileName(full);
+        }
+
+        /// <summary>通用（不依赖 root）的受保护路径判断：用于搬家前最后兜底拦截。</summary>
+        private static bool IsPathProtected(string path)
+        {
+            var p = path.Replace('/', '\\').TrimEnd('\\');
+            foreach (var seg in HardBlockSegments)
+                if (p.IndexOf("\\" + seg + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.EndsWith("\\" + seg, StringComparison.OrdinalIgnoreCase)) return true;
+            foreach (var hb in HardBlockPaths)
+                if (p.IndexOf("\\" + hb + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.EndsWith("\\" + hb, StringComparison.OrdinalIgnoreCase)) return true;
+            foreach (var sp in SoftBlockPaths)
+                if (p.IndexOf("\\" + sp + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.EndsWith("\\" + sp, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
 
         /// <summary>
         /// 按目录体积聚合扫描：一次迭代后序遍历算出每个目录体积，
@@ -47,6 +97,8 @@ namespace DiskCleaner.Services
                 var order = new List<string>();
                 var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var stack = new Stack<string>();
+                var rootNorm = NormalizeRoot(rootPath);
+                var rootNoTail = rootPath.TrimEnd('\\');
                 visited.Add(rootPath);
                 stack.Push(rootPath);
                 long dirCount = 0;
@@ -62,10 +114,25 @@ namespace DiskCleaner.Services
                         if (e.IsReparsePoint) return;          // 不跟随 junction/符号链接
                         if (!e.IsDirectory) return;
                         var full = Path.Combine(cur, e.Name);
-                        // 根目录下的系统目录整棵跳过
-                        if (cur.Equals(rootPath, StringComparison.OrdinalIgnoreCase) &&
-                            SystemDirBlacklist.Contains(e.Name))
+                        var rel = GetRelPath(rootNorm, full);
+
+                        // 根层系统目录整块屏蔽（Users 也在内，避免搬整个用户目录）
+                        if (string.Equals(cur.TrimEnd('\\'), rootNoTail, StringComparison.OrdinalIgnoreCase) &&
+                            HardBlockSegments.Contains(e.Name))
                             return;
+
+                        // 深层危险路径整块屏蔽（不显示、不深入）
+                        if (HardBlockPaths.Any(p => rel.Equals(p, StringComparison.OrdinalIgnoreCase) ||
+                                                   rel.StartsWith(p + "\\", StringComparison.OrdinalIgnoreCase)))
+                            return;
+
+                        // 软屏蔽容器：本身不加入列表，但继续深入其子目录，露出内部可搬的子目录
+                        if (SoftBlockPaths.Contains(rel))
+                        {
+                            if (visited.Add(full)) stack.Push(full);
+                            return;
+                        }
+
                         if (visited.Add(full))
                             stack.Push(full);
                     }, ct);
@@ -104,9 +171,13 @@ namespace DiskCleaner.Services
                 }
 
                 // 3) 过滤 + 排序 + 截断
+                var rootNorm2 = NormalizeRoot(rootPath);
                 foreach (var dir in order)
                 {
                     if (dir.Equals(rootPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    var rel = GetRelPath(rootNorm2, dir);
+                    // 软屏蔽容器本身不显示（其内部可搬子目录已单独入列）
+                    if (SoftBlockPaths.Contains(rel)) continue;
                     if (sizeMap.TryGetValue(dir, out var sz) && sz >= minSize)
                         result.Add(new DirectorySizeInfo
                         {
@@ -162,6 +233,8 @@ namespace DiskCleaner.Services
 
                 try
                 {
+                    if (IsPathProtected(src))
+                        throw new IOException("该目录受保护，不允许搬家（系统/用户关键目录）");
                     if (!Directory.Exists(src))
                         throw new IOException("源目录不存在");
                     if (JunctionHelper.IsJunction(src))
