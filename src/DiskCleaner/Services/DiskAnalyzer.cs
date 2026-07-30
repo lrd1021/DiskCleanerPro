@@ -130,6 +130,7 @@ namespace DiskCleaner.Services
                                     // 磁盘空间分析只聚合文件大小，不创建文件节点——避免游戏/缓存目录
                                     // 含数万小文件时 TreeView 一次性渲染卡死（R12 后续优化）。
                                     frame.FileSizeSum += e.Size;
+                                    frame.FileCountSum++;
                                     totalFiles++;
                                     if (totalFiles % 5000 == 0)
                                         OnProgress?.Invoke(-1, $"正在扫描 {frame.Node.Name}... ({FileSizeFormatter.Format(frame.FileSizeSum)})");
@@ -164,6 +165,7 @@ namespace DiskCleaner.Services
             public FileNode Node;
             public List<FileNode> Children = new List<FileNode>();
             public long FileSizeSum;
+            public long FileCountSum;
             public long DirSizeSum;
             public List<string> SubDirs;
             public int SubDirIndex;
@@ -193,6 +195,7 @@ namespace DiskCleaner.Services
         private void FinalizeFrame(BuildFrame frame)
         {
             frame.Node.SizeBytes = frame.FileSizeSum + frame.DirSizeSum;
+            frame.Node.FileCount = frame.FileCountSum + frame.Children.Sum(c => c.FileCount);
             if (frame.Node.IsDirectory)
                 frame.Node.LastModified = SafeGetLastModified(frame.Node.FullPath);
             frame.Children.Sort((a, b) => b.SizeBytes.CompareTo(a.SizeBytes));

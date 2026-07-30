@@ -438,14 +438,9 @@ namespace DiskCleaner.SmokeTest
 
         static int CountFiles(object node)
         {
-            // FileNode: IsDirectory, SizeBytes, Children (ObservableCollection<FileNode>)
-            var tp = node.GetType();
-            bool isDir = (bool)tp.GetProperty("IsDirectory").GetValue(node);
-            if (!isDir) return 1;
-            var children = (System.Collections.IEnumerable)tp.GetProperty("Children").GetValue(node);
-            int c = 0;
-            foreach (var ch in children) c += CountFiles(ch);
-            return c;
+            // DiskAnalyzer 不再为每个文件创建节点，而是把文件数聚合到目录节点的 FileCount 属性
+            var fc = (long)node.GetType().GetProperty("FileCount").GetValue(node);
+            return (int)fc;
         }
 
         static int FileCount(object group)

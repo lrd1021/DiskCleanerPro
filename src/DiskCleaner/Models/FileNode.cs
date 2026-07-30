@@ -27,6 +27,9 @@ namespace DiskCleaner.Models
             }
         }
 
+        /// <summary>本目录及其所有子目录中的文件总数（由 DiskAnalyzer 聚合填充；文件节点此值为 0）</summary>
+        public long FileCount { get; set; }
+
         public bool IsExpanded
         {
             get => _isExpanded;
