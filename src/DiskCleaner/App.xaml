@@ -9,6 +9,7 @@
         <ResourceDictionary>
             <!-- 转换器 -->
             <BooleanToVisibilityConverter x:Key="BoolToVis" />
+            <helpers:CountToVisibilityConverter x:Key="CountToVis" />
             <helpers:NavEqualityConverter x:Key="NavEqualityConverter" />
 
             <!-- ====== Design System v2 — VSCode/JetBrains 暗色主题 ====== -->

@@ -98,6 +98,10 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <TextBlock Text="未检测到该应用的缓存数据（可能未安装、未登录，或数据目录不在默认位置）。"
+                                       FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                       Margin="8,4,0,8"
+                                       Visibility="{Binding Targets.Count, Converter={StaticResource CountToVis}, ConverterParameter=Invert, FallbackValue=Collapsed}" />
                         </StackPanel>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>

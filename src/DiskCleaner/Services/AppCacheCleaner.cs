@@ -88,27 +88,35 @@ namespace DiskCleaner.Services
 
             // 微信：WeChat Files\<wxid>\
             var wechatRoot = Path.Combine(docs, "WeChat Files");
+            var wechatGroup = new AppCacheGroup { AppName = "微信", Icon = "💬" };
+            groups.Add(wechatGroup);
             if (Directory.Exists(wechatRoot))
             {
-                var g = new AppCacheGroup { AppName = "微信", Icon = "💬" };
                 foreach (var acctDir in SafeEnumerateDirs(wechatRoot))
                 {
                     string acct = Path.GetFileName(acctDir);
+                    // 跳过 WeChat Files 下的非账号目录（小程序框架、公共数据等）
+                    if (IsWeChatNonAccountDir(acct))
+                        continue;
+                    // 额外保险：账号目录通常包含 FileStorage 或 Msg
+                    if (!Directory.Exists(Path.Combine(acctDir, "FileStorage")) &&
+                        !Directory.Exists(Path.Combine(acctDir, "Msg")))
+                        continue;
+
                     foreach (var cat in WeChatCategories)
                     {
                         var full = Path.Combine(acctDir, cat.RelativeDir);
                         if (Directory.Exists(full))
-                            g.Targets.Add(MakeTarget($"{cat.Name}（{acct}）", cat.Description, full, cat.DefaultSelected, cat.Category));
+                            wechatGroup.Targets.Add(MakeTarget($"{cat.Name}（{acct}）", cat.Description, full, cat.DefaultSelected, cat.Category));
                     }
                 }
-                if (g.Targets.Count > 0) groups.Add(g);
             }
 
-            // QQ 旧版 / TIM：Tencent Files\<qq>\（与 QQ NT 归到同一“QQ”分组）
-            var qqGroup = groups.FirstOrDefault(x => x.AppName == "QQ");
-            bool qqGroupIsNew = qqGroup == null;
-            if (qqGroup == null) qqGroup = new AppCacheGroup { AppName = "QQ", Icon = "🐧" };
+            // QQ：旧版/TIM + NT 缓存统一归入“QQ”分组；即使未探测到也显示分组（空状态提示）
+            var qqGroup = new AppCacheGroup { AppName = "QQ", Icon = "🐧" };
+            groups.Add(qqGroup);
 
+            // QQ 旧版 / TIM：Tencent Files\<qq>\
             var qqRoot = Path.Combine(docs, "Tencent Files");
             if (Directory.Exists(qqRoot))
             {
@@ -135,8 +143,6 @@ namespace DiskCleaner.Services
                         qqGroup.Targets.Add(MakeTarget(cat.Name, cat.Description, full, cat.DefaultSelected, cat.Category));
                 }
             }
-
-            if (qqGroup.Targets.Count > 0 && qqGroupIsNew) groups.Add(qqGroup);
 
             return groups;
         }
@@ -167,6 +173,24 @@ namespace DiskCleaner.Services
             try { return Directory.EnumerateDirectories(root); }
             catch (IOException) { return Enumerable.Empty<string>(); }
             catch (UnauthorizedAccessException) { return Enumerable.Empty<string>(); }
+        }
+
+        /// <summary>
+        /// WeChat Files 根目录下存在一些非账号目录（如 WMPF 小程序框架、All Users 公共数据），
+        /// 这些目录不应被当作微信号目录遍历。
+        /// </summary>
+        private static bool IsWeChatNonAccountDir(string name)
+        {
+            var nonAccount = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "All Users",    // 公共配置
+                "WMPF",         // WeChat Mini Program Framework
+                "xlog",         // 日志目录
+                "Applet",       // 旧版小程序根目录（若存在）
+                "CrashDump",    // 崩溃转储
+                "HDImage"       // 高清图片公共缓存
+            };
+            return nonAccount.Contains(name);
         }
     }
 }
