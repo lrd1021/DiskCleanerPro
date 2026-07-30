@@ -74,13 +74,17 @@ jobs:
 
       - name: Sign binaries (Authenticode, GA gate)
         # 仅当仓库配置了 CODESIGN_PFX_BASE64 secret 才实际签名；常规 push 无证书时跳过。
-        if: ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
+        # 注意：step-level if 不能引用 secrets，故在脚本内判断。
         shell: pwsh
         env:
           CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
           CODESIGN_PASSWORD: ${{ secrets.CODESIGN_PASSWORD }}
           CODESIGN_TIMESTAMP_URL: ${{ vars.CODESIGN_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:CODESIGN_PFX_BASE64)) {
+            Write-Host "CODESIGN_PFX_BASE64 未配置，跳过 Authenticode 签名"
+            exit 0
+          }
           $ErrorActionPreference = 'Stop'
           $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
