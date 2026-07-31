@@ -23,7 +23,8 @@ RequestExecutionLevel admin
 Section "Main" SecMain
   SetOutPath "$INSTDIR"
   ; 递归复制 staging 目录全部内容（publish_fix 文件 + self-sign.ps1 + install-hook.ps1）
-  File /r "build\installer-staging\*.*"
+  ; NSIS 的 File 指令相对 .nsi 脚本文件所在目录解析，因此从 scripts\ 回到项目根目录
+  File /r "..\build\installer-staging\*.*"
 
   ; 写卸载信息
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskCleanerPro" "DisplayName" "DiskCleaner Pro"
