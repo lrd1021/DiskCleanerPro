@@ -1,4 +1,4 @@
-# install-hook.ps1
+﻿# install-hook.ps1
 # 由 NSIS 安装程序在安装完成后以管理员身份调用（RequestExecutionLevel admin 继承提权令牌）。
 #
 # 职责：

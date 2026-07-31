@@ -1,4 +1,4 @@
-# build-installer.ps1
+﻿# build-installer.ps1
 # 一键构建 DiskCleaner Pro 安装包（setup.exe）：publish + 本机签名 + 准备 staging + NSIS 编译。
 #
 # 用法（普通 PowerShell 即可，无需管理员；发布产物签名需要管理员，会自动提示）：
