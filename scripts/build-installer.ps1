@@ -52,8 +52,19 @@ if ($makensisCmd) {
   $candidate = Join-Path $nsisDir "makensis.exe"
   if (-not (Test-Path $candidate)) {
     Write-Host "=== 下载 NSIS 便携版 ==="
+    # SourceForge 需要 TLS 1.2+；旧版 PowerShell 默认 TLS 1.0/1.1 会连不上或拿到错误页面
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $url = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip"
-    Invoke-WebRequest -Uri $url -OutFile $nsisZip
+    Remove-Item $nsisZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $nsisDir -Recurse -Force -ErrorAction SilentlyContinue
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    $wc.DownloadFile($url, $nsisZip)
+    $fileInfo = Get-Item $nsisZip
+    if ($fileInfo.Length -lt 1MB) {
+      $preview = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($nsisZip))
+      throw "NSIS ZIP 下载异常（仅 $($fileInfo.Length) 字节），可能是错误页面：$preview"
+    }
     Expand-Archive $nsisZip -DestinationPath $nsisDir -Force
   }
   $makensis = $candidate
