@@ -373,7 +373,7 @@ namespace DiskCleaner.SmokeTest
             var isAuth = typeof(DiskCleaner.Helpers.NativeMethods).GetMethod("IsAuthenticodeSigned", BindingFlags.Public | BindingFlags.Static);
             bool signed = isAuth != null && File.Exists(expectedHelper) && (bool)isAuth.Invoke(null, new object[] { expectedHelper });
 
-            var helperPath = (string)getHelper.Invoke(null, null);
+            var helperPath = (string)getHelper.Invoke(null, new object[] { null });
 
 #if DEBUG
             // DEBUG：未签名仅告警，应放行（返回路径）

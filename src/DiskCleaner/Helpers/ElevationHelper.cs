@@ -29,14 +29,19 @@ namespace DiskCleaner.Helpers
         /// </summary>
         public static int RunElevated(string command, params string[] args)
         {
-            var helperPath = GetHelperPath();
+            var helperPath = GetHelperPath(out var diagnostic);
             if (string.IsNullOrEmpty(helperPath) || !File.Exists(helperPath))
             {
                 var pathHint = string.IsNullOrEmpty(helperPath) ? "(未知)" : helperPath;
                 MessageBoxHelper.Show(
                     $"未找到 ElevatedHelper 或其未通过完整性校验，无法执行需要管理员权限的操作。\n\n" +
-                    $"期望路径：{pathHint}\n\n" +
-                    $"请确保 DiskCleaner.Elevated.exe 与主程序位于同一目录；Release 版还需有效的 Authenticode 签名。",
+                    $"期望路径：{pathHint}\n" +
+                    $"诊断信息：{diagnostic ?? "无"}\n\n" +
+                    $"常见原因与处理：\n" +
+                    $"1. 文件缺失：请确保 DiskCleaner.Elevated.exe 与 DiskCleanerPro.exe 位于同一目录。\n" +
+                    $"2. 未签名：Release 版需要有效的 Authenticode 签名。请以管理员身份运行：\n" +
+                    $"   powershell -ExecutionPolicy Bypass -File scripts\\rebuild-sign.ps1\n" +
+                    $"3. 签名已过期/根证书未受信：重装信任根后重签；或临时在系统环境变量中设置 DISKCLEANER_SKIP_CALLER_CHECK=1 跳过门禁（仅调试）。",
                     "DiskCleaner Pro", MessageBoxButton.OK, MessageBoxImage.Error);
                 return 1;
             }
@@ -116,35 +121,76 @@ namespace DiskCleaner.Helpers
             return RunElevated("uninstall", uninstallCommandLine) == 0;
         }
 
-        private static string GetHelperPath()
+        private static string GetHelperPath(out string diagnostic)
         {
+            diagnostic = null;
             try
             {
-                // 使用 AppContext.BaseDirectory（应用部署目录）而非 Process.MainModule：
-                // 通过 dotnet 宿主启动（dotnet DiskCleanerPro.dll / dotnet run）时，
-                // MainModule 指向 dotnet.exe 所在目录，会把 helper 路径解析到错误位置。
-                var dir = AppContext.BaseDirectory;
-                if (string.IsNullOrEmpty(dir))
+                // 多层兜底探测应用部署目录（避免某些启动方式下 AppContext.BaseDirectory 为空）。
+                // 顺序：AppContext.BaseDirectory -> 当前进程主模块所在目录 -> 执行程序集所在目录。
+                var dirs = new System.Collections.Generic.List<string>();
+                var baseDir = AppContext.BaseDirectory;
+                if (!string.IsNullOrWhiteSpace(baseDir)) dirs.Add(baseDir);
+
+                try
                 {
-                    Logger.Error("ElevatedHelper: AppContext.BaseDirectory 为空");
+                    var mainModule = Process.GetCurrentProcess().MainModule;
+                    if (mainModule != null)
+                    {
+                        var mainDir = Path.GetDirectoryName(mainModule.FileName);
+                        if (!string.IsNullOrWhiteSpace(mainDir)) dirs.Add(mainDir);
+                    }
+                }
+                catch (Exception ex) { Logger.Warning($"无法获取当前进程主模块目录: {ex.Message}"); }
+
+                try
+                {
+                    var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                    var asmLocation = asm?.Location;
+                    if (!string.IsNullOrWhiteSpace(asmLocation))
+                    {
+                        var asmDir = Path.GetDirectoryName(asmLocation);
+                        if (!string.IsNullOrWhiteSpace(asmDir)) dirs.Add(asmDir);
+                    }
+                }
+                catch (Exception ex) { Logger.Warning($"无法获取执行程序集目录: {ex.Message}"); }
+
+                if (dirs.Count == 0)
+                {
+                    diagnostic = "无法通过 AppContext.BaseDirectory / MainModule / Assembly.Location 任何方式定位应用目录。";
+                    Logger.Error($"ElevatedHelper: {diagnostic}");
                     return null;
                 }
-                var helperPath = Path.Combine(dir, "DiskCleaner.Elevated.exe");
-                Logger.Info($"ElevatedHelper 候选路径: {helperPath}");
 
-                // N2：位置校验——helper 必须位于应用部署目录，防止路径注入/替换
-                var helperDir = Path.GetFullPath(Path.GetDirectoryName(helperPath) ?? "");
-                var baseDir = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar);
-                if (!string.Equals(helperDir, baseDir, StringComparison.OrdinalIgnoreCase))
+                string helperPath = null;
+                var tried = new StringBuilder();
+                foreach (var dir in dirs.Distinct(StringComparer.OrdinalIgnoreCase))
                 {
-                    Logger.Error($"ElevatedHelper 路径异常，拒绝启动: helperDir={helperDir}, baseDir={baseDir}");
-                    return null;
+                    var candidate = Path.Combine(dir, "DiskCleaner.Elevated.exe");
+                    if (tried.Length > 0) tried.Append("; ");
+                    tried.Append(candidate);
+                    Logger.Info($"ElevatedHelper 候选路径: {candidate}");
+
+                    // N2：位置校验——helper 必须位于应用部署目录，防止路径注入/替换
+                    var helperDir = Path.GetFullPath(Path.GetDirectoryName(candidate) ?? "");
+                    var baseDirFull = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar);
+                    if (!string.Equals(helperDir, baseDirFull, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Warning($"ElevatedHelper 路径异常，跳过: helperDir={helperDir}, baseDir={baseDirFull}");
+                        continue;
+                    }
+
+                    if (File.Exists(candidate))
+                    {
+                        helperPath = candidate;
+                        break;
+                    }
                 }
 
-                // 先区分"文件不存在"与"签名校验失败"，避免误导性的 Authenticode 报错
-                if (!File.Exists(helperPath))
+                if (helperPath == null)
                 {
-                    Logger.Error($"未找到 ElevatedHelper: {helperPath}");
+                    diagnostic = $"在以下路径均未找到 DiskCleaner.Elevated.exe：{tried}。";
+                    Logger.Error($"ElevatedHelper: {diagnostic}");
                     return null;
                 }
 
@@ -153,9 +199,11 @@ namespace DiskCleaner.Helpers
                 if (!NativeMethods.IsAuthenticodeSigned(helperPath))
                 {
 #if DEBUG
-                    Logger.Warning($"ElevatedHelper 未通过 Authenticode 校验（沙箱/调试环境常见）: {helperPath}");
+                    diagnostic = $"{helperPath} 未通过 Authenticode 校验（沙箱/调试环境常见）。";
+                    Logger.Warning($"ElevatedHelper: {diagnostic}");
 #else
-                    Logger.Error($"ElevatedHelper 未通过 Authenticode 校验，拒绝启动: {helperPath}。如重新 publish 过，请重新运行 scripts/self-sign.ps1 -InstallTrust 签名。");
+                    diagnostic = $"{helperPath} 未通过 Authenticode 校验。可能未签名，或签名根证书未受信。请以管理员运行 scripts\\rebuild-sign.ps1 重签。";
+                    Logger.Error($"ElevatedHelper: {diagnostic}");
                     return null;
 #endif
                 }
@@ -164,6 +212,7 @@ namespace DiskCleaner.Helpers
             }
             catch (Exception ex)
             {
+                diagnostic = $"路径/完整性校验异常：{ex.Message}";
                 Logger.Error("ElevatedHelper 路径/完整性校验异常", ex);
                 return null;
             }
