@@ -10,7 +10,8 @@
 !include "FileFunc.nsh"
 
 Name "DiskCleaner Pro"
-OutFile "DiskCleanerPro-Setup.exe"
+; OutFile 相对 .nsi 脚本文件目录解析，scripts\ 上一级即项目根目录
+OutFile "..\DiskCleanerPro-Setup.exe"
 InstallDir "$PROGRAMFILES\DiskCleanerPro"
 InstallDirRegKey HKLM "Software\DiskCleanerPro" "InstallDir"
 RequestExecutionLevel admin
