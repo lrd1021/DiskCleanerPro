@@ -35,11 +35,17 @@ if (-not $NoSign) {
 # 3) 准备 staging 目录（publish_fix 内容 + self-sign.ps1 + install-hook.ps1）
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Path $staging | Out-Null
-Copy-Item (Join-Path $publish "*") $staging -Recurse
+if (-not (Test-Path $publish)) { throw "publish 目录不存在: $publish" }
+Get-ChildItem -Path $publish | Copy-Item -Destination $staging -Recurse -Force
 Copy-Item (Join-Path $scriptDir "self-sign.ps1") $staging
 Copy-Item (Join-Path $scriptDir "install-hook.ps1") $staging
 # 删掉源机器指纹文件，强制 install-hook 在目标机器生成本机证书
 Remove-Item (Join-Path $staging "signing-thumbprint.txt") -Force -ErrorAction SilentlyContinue
+
+# 验证 staging 非空，避免 NSIS 报 "no files found"
+$stagingItems = Get-ChildItem -Path $staging -Recurse -ErrorAction SilentlyContinue
+if (-not $stagingItems -or $stagingItems.Count -eq 0) { throw "staging 目录为空: $staging" }
+Write-Host "staging 已准备，文件/目录数: $($stagingItems.Count)"
 
 # 4) 获取 makensis（NSIS 编译器）
 $makensis = $null
