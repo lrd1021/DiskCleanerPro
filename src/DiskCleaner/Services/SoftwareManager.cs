@@ -154,6 +154,9 @@ namespace DiskCleaner.Services
                 bool isMsi = Path.GetFileName(fileName).Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase)
                            || Path.GetFileName(fileName).Equals("msiexec", StringComparison.OrdinalIgnoreCase);
                 string resolvedFile = fileName;
+                // 传给 Elevated helper 的命令行：默认用原始串；非 MsiExec 且解析到真实文件时，
+                // 用“绝对路径 + 引号”的修正命令，避免 helper 重新解析原始串时再次踩空格/变量坑。
+                string correctedCommandLine = software.UninstallString.Trim();
                 if (isMsi)
                 {
                     // MsiExec 是系统信任的卸载器，使用系统目录中的真实文件
@@ -162,8 +165,15 @@ namespace DiskCleaner.Services
                 }
                 else
                 {
-                    try { resolvedFile = Path.GetFullPath(fileName); }
-                    catch { resolvedFile = fileName; }
+                    // 跨机器健壮性：注册表 UninstallString 常含环境变量(%ProgramFiles% 等)或相对安装目录的路径，
+                    // 而 Path.GetFullPath 不展开环境变量、相对路径依赖安装目录为工作目录（本工具用
+                    // UseShellExecute=false 启动，无此工作目录）。这里展开环境变量并以 InstallLocation 为锚点
+                    // 兜底解析，命中真实文件后用修正后的绝对路径命令传给 helper。
+                    resolvedFile = ResolveUninstallerPath(fileName, software.InstallLocation);
+                    if (File.Exists(resolvedFile))
+                    {
+                        correctedCommandLine = $"\"{resolvedFile}\" {(arguments ?? "").Trim()}".Trim();
+                    }
                 }
 
                 // 非 MsiExec 卸载：卸载程序文件必须真实存在，否则无法启动
@@ -173,7 +183,10 @@ namespace DiskCleaner.Services
                 {
                     OnProgress?.Invoke(100, $"找不到卸载程序：{resolvedFile}");
                     MessageBoxHelper.Show(
-                        $"找不到卸载程序：\n\n{resolvedFile}\n\n该软件可能已被卸载，或注册表中的卸载路径已失效。建议从软件列表中移除该项。",
+                        $"找不到卸载程序：\n\n{resolvedFile}\n\n" +
+                        $"原始卸载命令：{software.UninstallString}\n\n" +
+                        "可能原因：①该软件已被卸载，但注册表残留了卸载项（残留项）；②卸载路径包含环境变量(如 %ProgramFiles%)或相对路径，在不同电脑上解析不到。\n" +
+                        "建议：点击「刷新」后该项通常会消失；若仍显示且确认是残留项，可在注册表卸载项(HKLM/HKCU 的 Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall)中手动删除对应子项。",
                         "无法卸载 — DiskCleaner Pro",
                         System.Windows.MessageBoxButton.OK,
                         System.Windows.MessageBoxImage.Warning);
@@ -234,7 +247,8 @@ namespace DiskCleaner.Services
 
                 // 用户已在安全警告弹窗中确认跳过签名校验，把该状态传给 Elevated helper，
                 // 避免 helper 内部重复拦截导致 UAC 通过后无任何反应。
-                if (!ElevationHelper.UninstallElevated(software.UninstallString, userConfirmed))
+                // 非 MsiExec 时传修正后的绝对路径命令，确保 helper 能定位到真实卸载程序。
+                if (!ElevationHelper.UninstallElevated(correctedCommandLine, userConfirmed))
                 {
                     OnProgress?.Invoke(100, $"卸载失败或已取消：{software.Name}");
                     return false;
@@ -351,6 +365,33 @@ namespace DiskCleaner.Services
             fileName = parts[0];
             arguments = parts.Length > 1 ? parts[1] : "";
             return true;
+        }
+
+        // 跨机器健壮解析卸载程序真实路径（TryParseCommandLine 已用贪婪法修正“含空格未引号路径”后调用）：
+        //   1) 直接使用 fileName（已含绝对路径且存在）；
+        //   2) 展开环境变量（%ProgramFiles%/%APPDATA% 等，Path.GetFullPath 不展开）；
+        //   3) 以 InstallLocation 为锚点拼接（注册表 UninstallString 常为相对安装目录的路径）。
+        // 都不命中则返回原 fileName，交由调用方 File.Exists 判断并提示。
+        private static string ResolveUninstallerPath(string fileName, string installLocation)
+        {
+            if (File.Exists(fileName)) return Path.GetFullPath(fileName);
+
+            string expanded = Environment.ExpandEnvironmentVariables(fileName);
+            if (!string.Equals(expanded, fileName, StringComparison.OrdinalIgnoreCase) && File.Exists(expanded))
+                return Path.GetFullPath(expanded);
+
+            if (!string.IsNullOrWhiteSpace(installLocation))
+            {
+                string loc = Environment.ExpandEnvironmentVariables(installLocation).Trim();
+                if (Directory.Exists(loc))
+                {
+                    var cand1 = Path.Combine(loc, fileName);            // fileName 可能含相对子路径
+                    if (File.Exists(cand1)) return Path.GetFullPath(cand1);
+                    var cand2 = Path.Combine(loc, Path.GetFileName(fileName)); // 否则按文件名拼接
+                    if (File.Exists(cand2)) return Path.GetFullPath(cand2);
+                }
+            }
+            return fileName;
         }
 
         // 当 CommandLineToArgvW 把"未加引号的含空格路径"误切成多段时，

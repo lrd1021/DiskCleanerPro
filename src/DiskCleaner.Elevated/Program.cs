@@ -468,6 +468,10 @@ namespace DiskCleaner.Elevated
             arguments = null;
             if (string.IsNullOrWhiteSpace(commandLine)) return false;
 
+            // 展开环境变量（%ProgramFiles%/%APPDATA% 等），注册表 UninstallString 常含此类变量，
+            // 不展开会导致后续 File.Exists 误判“找不到文件”。主程序已尽量用修正命令，此处兜底。
+            commandLine = Environment.ExpandEnvironmentVariables(commandLine.Trim());
+
             var ptr = CommandLineToArgvW(commandLine, out int argc);
             if (ptr != IntPtr.Zero && argc > 0)
             {
