@@ -23,7 +23,7 @@ RequestExecutionLevel admin
 Section "Main" SecMain
   SetOutPath "$INSTDIR"
   ; 递归复制 staging 目录全部内容（publish_fix 文件 + self-sign.ps1 + install-hook.ps1）
-  File /r "installer-staging\*.*"
+  File /r "build\installer-staging\*.*"
 
   ; 写卸载信息
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskCleanerPro" "DisplayName" "DiskCleaner Pro"
