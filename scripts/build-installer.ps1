@@ -49,21 +49,36 @@ if ($makensisCmd) {
 } else {
   $nsisZip = Join-Path $env:TEMP "nsis.zip"
   $nsisDir = Join-Path $env:TEMP "nsis"
-  $candidate = Join-Path $nsisDir "makensis.exe"
+  # nsis-3.11.zip 解压后内部是 nsis-3.11/ 子目录
+  $candidate = Join-Path $nsisDir "nsis-3.11\makensis.exe"
   if (-not (Test-Path $candidate)) {
     Write-Host "=== 下载 NSIS 便携版 ==="
-    # SourceForge 需要 TLS 1.2+；旧版 PowerShell 默认 TLS 1.0/1.1 会连不上或拿到错误页面
+    # SourceForge 需要 TLS 1.2+；旧版 PowerShell 默认 TLS 1.0/1.1 会连不上或拿到 HTML 下载页
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $url = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip"
     Remove-Item $nsisZip -Force -ErrorAction SilentlyContinue
     Remove-Item $nsisDir -Recurse -Force -ErrorAction SilentlyContinue
-    $wc = New-Object System.Net.WebClient
-    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    $wc.DownloadFile($url, $nsisZip)
+
+    $downloaded = $false
+    # 优先用系统 curl.exe（Windows 10 1803+/11 自带），对 SourceForge 重定向最稳
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+      Write-Host "使用 curl.exe 下载..."
+      & $curl.Source -L -o $nsisZip $url
+      if ($LASTEXITCODE -eq 0) { $downloaded = $true }
+    }
+    # 回退 WebClient
+    if (-not $downloaded) {
+      Write-Host "使用 WebClient 下载..."
+      $wc = New-Object System.Net.WebClient
+      $wc.Headers.Add("User-Agent", "curl/8.0.0")
+      $wc.DownloadFile($url, $nsisZip)
+    }
+
     $fileInfo = Get-Item $nsisZip
     if ($fileInfo.Length -lt 1MB) {
       $preview = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($nsisZip))
-      throw "NSIS ZIP 下载异常（仅 $($fileInfo.Length) 字节），可能是错误页面：$preview"
+      throw "NSIS ZIP 下载异常（仅 $($fileInfo.Length) 字节），内容似乎是网页：$preview"
     }
     Expand-Archive $nsisZip -DestinationPath $nsisDir -Force
   }
