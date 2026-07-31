@@ -1,4 +1,4 @@
-; installer.nsi - DiskCleaner Pro 安装程序
+﻿; installer.nsi - DiskCleaner Pro 安装程序
 ; 由 scripts/build-installer.ps1 调用 makensis 编译为 DiskCleanerPro-Setup.exe
 ;
 ; 行为：
