@@ -16,6 +16,10 @@ publish_*/
 *.pem
 signing-thumbprint.txt
 
+# === 安装包构建产物（staging 约 160MB+，setup.exe 可重新生成，不入库）===
+build/
+DiskCleanerPro-Setup.exe
+
 # === 工具/评审缓存 ===
 .gstack/
 

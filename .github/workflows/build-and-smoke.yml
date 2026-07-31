@@ -119,3 +119,32 @@ jobs:
             }
             Write-Host "提示：分发前须运行 scripts/sign-binaries.ps1 完成 Authenticode 签名（GA 前置，常规 CI 不阻断）"
           }
+
+      - name: Build installer (setup.exe)
+        # 构建可分发安装包：publish + 准备 staging + NSIS 编译。
+        # 用 -NoSign：CI 无代码签名证书，由目标机器安装时的 install-hook.ps1 在本机生成证书并签名。
+        # NSIS 通过 Chocolatey 预装（windows-latest 自带 choco，比 SourceForge 直连稳）；
+        # 若已存在则跳过，build-installer.ps1 检测到 makensis 在 PATH 即不再下载。
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress 2>&1 | Out-Null
+            $env:PATH = "$env:ChocolateyInstall\bin;$env:PATH"
+          }
+          pwsh -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -NoSign
+
+      - name: Verify setup.exe
+        run: |
+          if (Test-Path ./DiskCleanerPro-Setup.exe) {
+            Write-Host "setup.exe 已生成: $((Get-Item ./DiskCleanerPro-Setup.exe).Length) bytes"
+          } else {
+            Write-Error "DiskCleanerPro-Setup.exe 未生成"
+            exit 1
+          }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiskCleanerPro-Setup
+          path: DiskCleanerPro-Setup.exe
+          if-no-files-found: error
